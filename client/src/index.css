@@ -1,0 +1,71 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --color-ink-950: #070b16;
+  --color-ink-900: #0b1224;
+  --color-ink-850: #0f172e;
+  --color-ink-800: #141d38;
+  --color-ink-700: #1f2a4a;
+  --color-ink-600: #2c3a62;
+  --color-ink-400: #7d89ad;
+  --color-ink-300: #a3adc9;
+  --color-ink-200: #cdd3e4;
+  --color-ink-100: #e8ebf4;
+
+  --color-accent: #5eead4;
+  --color-accent-strong: #2dd4bf;
+  --color-accent-dim: #134e4a;
+  --color-violet: #a5b4fc;
+  --color-warn: #fbbf24;
+  --color-danger: #fb7185;
+
+  --animate-slide-in: slide-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-fade-up: fade-up 320ms ease-out both;
+  --animate-pulse-ring: pulse-ring 1.8s ease-out infinite;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.995); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pulse-ring {
+  0% { transform: scale(0.9); opacity: 0.55; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage-bg {
+  background:
+    radial-gradient(1200px 500px at 15% -10%, rgb(94 234 212 / 0.07), transparent 60%),
+    radial-gradient(900px 500px at 110% 120%, rgb(165 180 252 / 0.07), transparent 60%),
+    var(--color-ink-900);
+}
+
+.grid-texture {
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.scrollbar-thin { scrollbar-width: thin; scrollbar-color: var(--color-ink-700) transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}
