@@ -332,7 +332,99 @@ describe('PresenterController — status lifecycle', () => {
     c.markConnected();
     expect(sent).toEqual([{ type: 'response.create' }]);
     sent.length = 0;
-    c.markConnected('What are the main production risks?');
+    c.markConnected({ initialQuestion: 'What are the main production risks?' });
     expect(sent.map((e) => e.type)).toEqual(['conversation.item.create', 'response.create']);
+  });
+});
+
+describe('PresenterController — reliability fixes', () => {
+  it('reports a failing navigation handler to the model instead of crashing', () => {
+    const sent: ClientEvent[] = [];
+    const c = new PresenterController((e) => (sent.push(e), true), {
+      getCurrentSlide: () => 1,
+      goTo: () => {
+        throw new Error('render failed');
+      },
+    });
+    c.markConnected({ greet: false });
+    expect(() => c.handleServerEvent(responseDone('r1', [call('c1', { slide_number: 3, reason: 'x', transition: 'immediate' })]))).not.toThrow();
+    expect(outputs(sent)).toEqual([expect.objectContaining({ ok: false, error: 'The slide could not be changed.', current_slide: 1 })]);
+    expect(sent.at(-1)!.type).toBe('response.create'); // the model gets to say so
+    expect(c.diag.getEvents().some((e) => e.kind === 'tool.failed')).toBe(true);
+  });
+
+  it('retries a response.create rejected by an active response, once that response ends', () => {
+    const t = setup();
+    t.controller.handleServerEvent({ type: 'error', error: { type: 'invalid_request_error', code: 'conversation_already_has_active_response' } });
+    expect(t.sent).toEqual([]);
+    t.controller.handleServerEvent(responseDone('r0', [], 'cancelled'));
+    expect(t.sent).toEqual([{ type: 'response.create' }]);
+    // only once
+    t.controller.handleServerEvent(responseDone('r1'));
+    expect(t.sent).toHaveLength(1);
+  });
+
+  it('does not retry if the user has spoken since the rejection', () => {
+    const t = setup();
+    t.controller.handleServerEvent({ type: 'response.created', response: { id: 'r0', status: 'in_progress' } });
+    t.controller.handleServerEvent({ type: 'error', error: { code: 'conversation_already_has_active_response' } });
+    t.controller.handleServerEvent({ type: 'input_audio_buffer.speech_started', item_id: 'u1' });
+    t.controller.handleServerEvent(responseDone('r0', [], 'cancelled'));
+    expect(t.sent.some((e) => e.type === 'response.create')).toBe(false);
+  });
+
+  it('shows thinking, not speaking, while the follow-up response is generating', () => {
+    const t = setup();
+    t.controller.handleServerEvent({ type: 'response.created', response: { id: 'r1', status: 'in_progress' } });
+    t.controller.handleServerEvent({ type: 'output_audio_buffer.started', response_id: 'r1' });
+    t.controller.handleServerEvent(responseDone('r1', [call('c1', { slide_number: 3, reason: 'x', transition: 'immediate' })]));
+    t.controller.handleServerEvent({ type: 'response.created', response: { id: 'r2', status: 'in_progress' } });
+    t.controller.handleServerEvent({ type: 'output_audio_buffer.stopped', response_id: 'r1' });
+    expect(t.status()).toBe('thinking');
+  });
+
+  it('can connect without greeting (used by the eval harness)', () => {
+    const sent: ClientEvent[] = [];
+    const c = new PresenterController((e) => (sent.push(e), true), { getCurrentSlide: () => 1, goTo: () => {} });
+    c.markConnected({ greet: false });
+    expect(sent).toEqual([]);
+    expect(c.getSnapshot().status).toBe('listening');
+  });
+});
+
+describe('PresenterController — diagnostics', () => {
+  it('measures turn → first audio from speech_stopped', () => {
+    const t = setup();
+    t.controller.handleServerEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+    t.clock.advance(640);
+    t.controller.handleServerEvent({ type: 'response.created', response: { id: 'r1', status: 'in_progress' } });
+    t.controller.handleServerEvent({ type: 'output_audio_buffer.started', response_id: 'r1' });
+    expect(t.controller.diag.getMetrics().turnLatencyMs).toEqual([640]);
+    // A second audio start in the same turn (post-tool response) is not a new turn.
+    t.controller.handleServerEvent({ type: 'output_audio_buffer.started', response_id: 'r2' });
+    expect(t.controller.diag.getMetrics().turnLatencyMs).toEqual([640]);
+  });
+
+  it('counts tool calls, navigations, interruptions and cancellations without double counting', () => {
+    const t = setup();
+    t.controller.handleServerEvent(responseDone('r1', [call('c1', { slide_number: 4, reason: 'x', transition: 'immediate' })]));
+    t.controller.handleServerEvent(responseDone('r2', [call('c2', '{bad json')]));
+    t.controller.handleServerEvent({ type: 'response.created', response: { id: 'r3', status: 'in_progress' } });
+    t.controller.handleServerEvent({ type: 'input_audio_buffer.speech_started', item_id: 'u1' });
+    t.controller.handleServerEvent(responseDone('r3', [call('c3', { slide_number: 2, reason: 'x', transition: 'immediate' })], 'cancelled', 'turn_detected'));
+    const m = t.controller.diag.getMetrics();
+    expect(m).toMatchObject({ toolCalls: 2, toolFailures: 1, navigations: 1, cancelledResponses: 1, interruptions: { auto: 1, manual: 0 } });
+  });
+
+  it('records the realtime session id and grounding flags, never transcript text', () => {
+    const t = setup();
+    t.controller.handleServerEvent({ type: 'session.created', session: { id: 'sess_abc123' } });
+    t.controller.handleServerEvent({ type: 'response.output_audio_transcript.done', response_id: 'r1', item_id: 'a1', transcript: 'About 73 percent of agents fail, says a recent study by Acme.' });
+    const events = t.controller.diag.getEvents();
+    expect(events.find((e) => e.kind === 'session.realtime_id')?.data).toEqual({ id: 'sess_abc123' });
+    const flag = events.find((e) => e.kind === 'grounding.flag')!;
+    expect(flag.realtimeSessionId).toBe('sess_abc123');
+    expect(JSON.stringify(events)).not.toContain('Acme');
+    expect(t.controller.getSnapshot().transcript.find((e) => e.id === 'a1')?.groundingFlags?.length).toBeGreaterThan(0);
   });
 });

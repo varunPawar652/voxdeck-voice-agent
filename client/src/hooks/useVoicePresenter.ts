@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { SLIDE_COUNT } from '@voxdeck/shared';
 import { requestSession } from '../lib/api.ts';
+import { DiagnosticsRecorder } from '../lib/diagnostics.ts';
 import { PresenterController } from '../lib/presenterController.ts';
 import { RealtimeConnection } from '../lib/realtimeConnection.ts';
 
@@ -27,13 +28,19 @@ export function useVoicePresenter() {
 
   // The refs below are only dereferenced inside callbacks the controller invokes later
   // (on data-channel events), never during render — the lint rule can't see that.
+  const [diagnostics] = useState(() => new DiagnosticsRecorder());
   const [controller] = useState(
     // eslint-disable-next-line react-hooks/refs
     () =>
-      new PresenterController((event) => connectionRef.current?.send(event) ?? false, {
-        getCurrentSlide: () => slideRef.current,
-        goTo: (slide, source) => applySlide(slide, source),
-      }),
+      new PresenterController(
+        (event) => connectionRef.current?.send(event) ?? false,
+        {
+          getCurrentSlide: () => slideRef.current,
+          goTo: (slide, source) => applySlide(slide, source),
+        },
+        undefined,
+        diagnostics,
+      ),
   );
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
 
@@ -48,6 +55,10 @@ export function useVoicePresenter() {
     const attempt = ++attemptRef.current;
     const isCurrent = () => attempt === attemptRef.current;
     controller.markConnecting();
+    const clientSessionId = crypto.randomUUID();
+    diagnostics.startSession(clientSessionId);
+    const startedAt = performance.now();
+    let mintMs = 0;
 
     audioRef.current ??= Object.assign(new Audio(), { autoplay: true });
     const connection = new RealtimeConnection(audioRef.current, {
@@ -57,10 +68,12 @@ export function useVoicePresenter() {
         setStreams({ mic: connection.micStream, remote: connection.remoteStream });
         const question = queuedQuestionRef.current;
         queuedQuestionRef.current = undefined;
-        controller.markConnected(question);
+        diagnostics.record('session.connected', { ms: Math.round(performance.now() - startedAt), mintMs, ...connection.timings });
+        controller.markConnected({ initialQuestion: question });
       },
       onLost: (reason) => {
         if (!isCurrent()) return;
+        diagnostics.record('session.lost', { reason });
         teardown();
         controller.markError(`${reason} Reconnect to continue.`);
       },
@@ -68,23 +81,33 @@ export function useVoicePresenter() {
     connectionRef.current = connection;
 
     try {
-      const session = await requestSession(slideRef.current);
+      // Mint the credential and open the mic in parallel. If both fail, the server's
+      // error (usually configuration) is the more useful one to show.
+      const mintStarted = performance.now();
+      const [sessionResult, micResult] = await Promise.allSettled([
+        requestSession(slideRef.current, clientSessionId).finally(() => (mintMs = Math.round(performance.now() - mintStarted))),
+        connection.prepareMicrophone(),
+      ]);
+      if (sessionResult.status === 'rejected') throw sessionResult.reason;
+      if (micResult.status === 'rejected') throw micResult.reason;
       if (!isCurrent()) return;
-      await connection.connect(session.clientSecret);
+      await connection.connect(sessionResult.value.clientSecret);
       if (!isCurrent()) connection.close();
       else connection.setMicEnabled(micEnabled);
     } catch (err) {
       if (!isCurrent()) return;
+      diagnostics.record('session.failed', { error: err instanceof Error ? ((err as { code?: string; kind?: string }).code ?? (err as { kind?: string }).kind ?? err.name) : 'unknown' });
       teardown();
       controller.markError(err instanceof Error ? err.message : 'Could not start the voice session.');
     }
-  }, [controller, micEnabled, teardown]);
+  }, [controller, diagnostics, micEnabled, teardown]);
 
   const disconnect = useCallback(() => {
     attemptRef.current++;
+    if (connectionRef.current) diagnostics.record('session.closed');
     teardown();
     controller.markDisconnected();
-  }, [controller, teardown]);
+  }, [controller, diagnostics, teardown]);
 
   const goToSlide = useCallback(
     (slide: number) => {
@@ -135,6 +158,7 @@ export function useVoicePresenter() {
     currentSlide,
     lastSource,
     connected,
+    diagnostics,
     micEnabled,
     micStream: streams.mic,
     remoteStream: streams.remote,

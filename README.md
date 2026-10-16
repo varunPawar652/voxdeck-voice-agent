@@ -1,180 +1,194 @@
-# VoxDeck — The Voice-Powered Presentation Agent
+# VoxDeck — a voice presenter you can interrupt
 
-A six-slide technical talk — **"How AI Agents Work: From LLMs to Autonomous Systems"** — presented live by an AI voice. Ask a question out loud; the presenter calls a real `navigate_to_slide` tool to jump to the right slide and explains it. Talk over it at any time and it stops, drops its stale state, and answers the new question.
+A six-slide talk — **"Building Reliable Voice AI Agents: Real-Time Interaction, Grounding, Safety and Evaluation"** — presented live by a speech-to-speech AI. Ask a question out loud; the presenter calls a real `navigate_to_slide` tool, the slide changes, and it explains the slide in a couple of sentences. Talk over it and it stops, drops everything the old answer still owned, and answers the new question.
 
-Built on the **OpenAI Realtime API (GA)** over **browser WebRTC** — speech-to-speech, no separate STT/TTS pipeline.
+Built on the **OpenAI Realtime API (GA)** over **browser WebRTC**, with a **live voice evaluation suite** that speaks synthesized audio into the same model and session configuration and scores what happens.
+
+> Educational prototype. It makes no clinical, regulatory or production-readiness claims.
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Install (Node ≥ 20.19; npm workspaces)
-npm install
-
-# 2. Configure
-cp .env.example .env
-#    then set OPENAI_API_KEY=sk-...  (needs Realtime API access)
-
-# 3. Run backend (:3001) and frontend (:5173) together
-npm run dev
+npm install                 # Node ≥ 20.19, npm workspaces
+cp .env.example .env        # then set OPENAI_API_KEY=sk-...   (never put it in .env.example)
+npm run dev                 # server :3001 + client :5173
 ```
 
-Open **http://localhost:5173** in Chrome, click **Start presenter**, allow the microphone, and ask a question.
+Open **http://localhost:5173** in Chrome → **Start presenter** → allow the microphone → ask a question (or tap an example chip). Press **D** for diagnostics.
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Express server (tsx watch) + Vite dev server, `/api` proxied to `:3001` |
-| `npm test` | Vitest — 100 unit/integration tests (no API key needed) |
-| `npm run typecheck` | `tsc --noEmit` for `shared`, `server`, `client` |
-| `npm run lint` | ESLint (typescript-eslint + react-hooks) |
-| `npm run check` | typecheck + lint + test |
-| `npm run build` | Production client build into `client/dist` |
-| `npm run check:bundle` | Scans `client/dist` for anything resembling an OpenAI key (and the literal `.env` value) |
-| `npm start` | Single-port production mode: Express serves the API **and** `client/dist` on `:3001` (set `CLIENT_ORIGIN=http://localhost:3001`) |
+| `npm run dev` | Express (tsx watch) + Vite, `/api` proxied to `:3001` |
+| `npm test` | Vitest — unit, integration and deterministic scenario traces (no API key) |
+| `npm run typecheck` / `npm run lint` / `npm run check` | `tsc` for all four workspaces · ESLint · all three |
+| `npm run eval:voice` | **Live voice evaluation** against the real Realtime API (needs a key; ~6 min; a few cents) |
+| `npm run build` · `npm run check:bundle` | Production client build · scan the bundle for API keys |
+| `npm start` | Single-port production mode on `:3001` (set `CLIENT_ORIGIN=http://localhost:3001`) |
 
-> **Headphones recommended for the demo.** Echo cancellation is on and noise reduction is `near_field`, but loud laptop speakers can still be picked up as "user speech" and interrupt the presenter.
+> **Use headphones for the demo.** With laptop speakers or a noisy room, the microphone can pick up the presenter's voice or background speech and treat it as an interruption (see *Known limitations*).
 
 ### Environment variables
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENAI_API_KEY` | — | **Server only.** Never sent to the browser. If unset, the app loads and shows a clear error on connect. |
-| `OPENAI_REALTIME_MODEL` | `gpt-realtime` | Any Realtime model, e.g. `gpt-realtime-2.1`, `gpt-realtime-mini`. |
-| `OPENAI_REALTIME_VOICE` | `marin` | e.g. `cedar`, `alloy`. |
+| `OPENAI_API_KEY` | — | **Server only.** Never sent to the browser. If unset the UI loads and explains the problem on connect. |
+| `OPENAI_REALTIME_MODEL` | `gpt-realtime` | Any Realtime speech-to-speech model. |
+| `OPENAI_REALTIME_VOICE` | `marin` | |
 | `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | Live captions of the user's speech. |
-| `PORT` | `3001` | Backend port. |
-| `CLIENT_ORIGIN` | `http://localhost:5173` | The single origin allowed by CORS. |
-| `CLIENT_SECRET_TTL_SECONDS` | `120` | Lifetime of the ephemeral credential (10–7200). |
+| `OPENAI_TURN_DETECTION` | `server_vad` | silence timer; or `semantic_vad`. Both keep barge-in on. Chosen by the *Turn detection A/B* below. |
+| `OPENAI_VAD_EAGERNESS` | `auto` | semantic VAD only: `low` · `medium` · `high` · `auto` (= medium). |
+| `OPENAI_VAD_SILENCE_MS` | `500` | server VAD only. |
+| `CLIENT_SECRET_TTL_SECONDS` | `120` | Lifetime of the ephemeral browser credential (10–7200). |
+| `PORT` · `CLIENT_ORIGIN` | `3001` · `http://localhost:5173` | CORS allows exactly `CLIENT_ORIGIN`. |
+| `EVAL_JUDGE_MODEL` | `gpt-4.1-mini` | Eval harness only: the LLM judge for semantic criteria. |
 
 ---
 
 ## Architecture
 
 ```
- Browser (React)                                Express server                 OpenAI
- ───────────────                                ──────────────                 ──────
- Start presenter ──POST /api/realtime/session──▶ validate (Zod)
-                                                 build session config ──POST /v1/realtime/client_secrets──▶
-                  ◀── { clientSecret: ek_…, expiresAt } ◀───────────────────── ephemeral key (TTL 120s)
- getUserMedia (mic)
- RTCPeerConnection + "oai-events" data channel
- SDP offer ─────────────── POST /v1/realtime/calls (Bearer ek_…) ─────────────────────────────▶ Realtime session
-            ◀──────────────────────────────── SDP answer ◀─────────────────────────────────────
- mic audio ═══════════════════════════════ WebRTC media ═══════════════════════════════════▶  semantic VAD
- speaker   ◀═══════════════════════════════ model voice ◀════════════════════════════════════  gpt-realtime
- PresenterController ◀──────────── server events (data channel) ◀──────────────────────────  response.done{function_call}
-   ├─ validate args (Zod) → deck.goTo(n)   (React state = source of truth)
-   └─ function_call_output + response.create ───────────────────────────────────────────────▶ continues speaking
+Browser (React)                       Express                         OpenAI
+Start ─ POST /api/realtime/session ──▶ Zod-validate ─ build session ─ POST /v1/realtime/client_secrets
+        { currentSlide, clientSessionId }   (prompt, tool, VAD,              ◀── ek_… (TTL 120 s)
+                                            barge-in fixed here)
+getUserMedia ║ (in parallel with minting)
+RTCPeerConnection + "oai-events" ─ SDP ─────────────────────────────▶ POST /v1/realtime/calls (Bearer ek_…)
+mic ════════════════════════ WebRTC audio ══════════════════════════▶ VAD → gpt-realtime
+speaker ◀══════════════════════════════════════════════════════════  streamed voice
+PresenterController ◀── server events ──  response.done { function_call navigate_to_slide }
+  ├─ Zod-validate → deck.goTo(n)        (React state = what is on screen)
+  ├─ function_call_output (slide content + sources) + response.create ──▶ explanation continues
+  └─ DiagnosticsRecorder (local event log, timings, no secrets/transcripts)
 ```
 
-**Session establishment:** ephemeral client secrets (one documented GA pattern, used end-to-end). The server bakes the *entire* session into the secret — instructions, the tool, VAD and barge-in, voice, transcription — so the browser can connect to that session but cannot widen it. The request body accepts only `{ currentSlide }` (`.strict()`), so a client can't smuggle in its own instructions or tools.
-
-### Repository layout
-
 ```
-shared/src/            single source of truth, imported by both sides
-  presentation.ts      6 slides: id, number, title, summary, key concepts, example, speaker notes, keywords, diagram config
-  schemas.ts           Zod: slide number, navigate_to_slide args, API request/response
-  tools.ts             navigate_to_slide JSON-schema tool definition (test-asserted to match Zod)
-  instructions.ts      compiles the deck + rules into the model's system prompt
-server/src/
-  config/env.ts        Zod-validated env; never echoes values
-  services/realtimeSession.ts   buildSessionConfig() + client-secret minting + upstream error mapping
-  routes/              /api/health, /api/realtime/session (rate-limited, no-store)
-  app.ts               helmet CSP, exact-match CORS, JSON limits, error handler, optional static hosting
-client/src/
-  lib/presenterController.ts    ★ framework-free event → action state machine (tool dispatch, barge-in)
-  lib/realtimeConnection.ts     WebRTC transport (mic, SDP exchange, data channel)
-  hooks/useVoicePresenter.ts    wires deck state + controller + connection into React
-  components/          Header, SlideStage, diagrams, SidePanel (status/transcript/outline), ControlBar
+shared/   presentation.ts (6 slides: id, title, summary, concepts, example[illustrative?], notes, keywords, sources, diagram)
+          instructions.ts (deck → system prompt + conversation/grounding policy) · tools.ts · schemas.ts (Zod)
+          grounding.ts (deterministic audit: numbers/citations not in the deck)
+server/   config/env.ts · services/realtimeSession.ts (buildSessionConfig, client-secret minting, error mapping)
+          routes/ (health, session) · app.ts (helmet CSP, exact-origin CORS, rate limit, safe errors)
+client/   lib/presenterController.ts ★ (event → action state machine) · lib/diagnostics.ts · lib/realtimeConnection.ts
+          hooks/useVoicePresenter.ts · components/ (stage, diagrams, side panel, control bar, diagnostics panel)
+evals/    scenarios.ts (A–J) · harness/ (live session, synthetic caller, LLM judge) · run.ts (CLI + reports)
 ```
 
-### How tool calls are made reliable
+### What the deterministic code owns (and what it leaves to the model)
 
-`PresenterController.handleServerEvent` is a plain class driven by Realtime server events, unit-tested with a fake clock.
+The model handles language, routing judgment and explanation. Code owns only the invariants a prompt cannot guarantee:
 
-| Concern | Mechanism |
+| Invariant | Mechanism |
 |---|---|
-| Dispatch from the right event | Calls execute from **`response.done`** only when `response.status === "completed"`. (`response.function_call_arguments.done` also fires for cancelled responses, so it isn't used as the trigger.) |
-| Validation | `JSON.parse` guarded, then `navigateToSlideArgsSchema` (Zod). Unknown tool, malformed JSON, or out-of-range args → `{ ok:false, error }` output **plus** `response.create`, so the model recovers out loud. |
-| Exactly-once | `handledCallIds` (accepted) and `answeredCallIds` (output sent) are separate sets, so a replayed `response.done` or a deferred call can't execute or answer twice. |
-| Cancelled / failed responses | Their calls get an `{ ok:false }` output (no dangling `function_call` items in history), but **no** `response.create`, so the model doesn't talk over the user. |
-| Stale async updates | `next_sentence` navigations wait for `output_audio_buffer.stopped` (max 2.5 s). A `navEpoch` counter, bumped by interruptions and manual navigation, voids them if the world moved on. |
-| One navigation per turn | `parallel_tool_calls: false` in the session. |
-| Truthful narration | The tool result carries the slide's real content, and the instructions forbid claiming a move unless `ok: true` came back. |
-| Manual navigation sync | Prev/next/outline clicks inject a `system` message (`[deck] The user manually moved to slide N`) without triggering a response. |
+| The screen is the source of truth | Every slide change goes through `deck.goTo`; the model learns the result from `function_call_output` and `[deck]` notes on manual navigation. |
+| Never claim a navigation that didn't happen | `ok: true` is returned only after `goTo` succeeds; a throwing handler returns `ok: false` and the model is asked to say so. |
+| Nothing from an interrupted answer is applied | Responses active or playing at barge-in are marked stale: their transcript deltas, tool calls and deferred navigations are dropped. Calls are executed from `response.done` only when `status === "completed"` (the `…arguments.done` event also fires for cancelled responses). |
+| Exactly one output per function call | Separate *accepted* and *answered* call-id sets; cancelled calls are closed with `ok: false` **without** `response.create` so the model never talks over the user. |
+| No dangling silence after a race | A `response.create` rejected with `conversation_already_has_active_response` is retried once that response ends — unless the user spoke in between. |
+| One navigation per turn | `parallel_tool_calls: false`. |
 
-### How barge-in works
+**Barge-in** is the API's own behaviour, not a UI trick: `turn_detection.interrupt_response: true` makes the server cancel the in-flight response on user speech, and over WebRTC it truncates the unplayed audio so the model's history matches what was heard. The manual **Interrupt** button (Esc) sends `response.cancel` then `output_audio_buffer.clear`, in the order the reference specifies.
 
-1. **Server-side:** `turn_detection: { type: "semantic_vad", interrupt_response: true, create_response: true }`. When the user speaks, the Realtime server cancels the in-flight response. Over WebRTC it also **truncates the unplayed audio and the conversation item**, so the model's history matches what the user actually heard.
-2. **Client-side** on `input_audio_buffer.speech_started` while a response is active or audio is playing: mark that response id stale (later transcript deltas and tool calls from it are ignored), cancel any pending navigation, tag the transcript bubble `interrupted`, and show the **Interrupted** state.
-3. **Manual Interrupt** (button or `Esc`): `response.cancel` (when generation is still running), then `output_audio_buffer.clear` (WebRTC-only; flushes queued audio and truncates). The order follows the API reference.
-4. Mic stays live during playback; `getUserMedia` uses `echoCancellation` and `noise_reduction: near_field` reduces self-interruption.
+### Conversation and grounding policy (in the prompt)
 
-Status states map to real events: **Connecting** (session mint + SDP), **Listening** (idle / user speaking), **Thinking** (`speech_stopped` → `response.created`), **Speaking** (`output_audio_buffer.started` → `stopped`), **Interrupted** (barge-in, ~0.9 s badge), **Error**.
+- 1–3 short sentences; explain, don't read the slide; occasional follow-up invitation.
+- **Spoken cue before switching slides** (≤ 6 words, e.g. "Let's look at tool calling."), then the tool call in the same turn. In live runs this puts first audio ~0.5 s after end-of-turn instead of after the full tool round-trip (~2 s).
+- Follow-ups stay on the slide; greetings/off-topic never navigate; vague requests use the latest topic or get **one short clarifying question**.
+- The deck (6 slides, inlined) is the trusted knowledge source — no RAG infrastructure for static content. General knowledge must be flagged; **no invented statistics, studies or citations**; only listed sources may be cited (shown on each slide); illustrative examples are labelled as such.
+- A deterministic **grounding audit** flags numbers or citation phrasing absent from the deck. It marks the transcript bubble and logs to diagnostics; it is a heuristic for review, not a gate.
+
+### Diagnostics (press **D**)
+
+Local only — no audio, no transcripts, no keys. Shows connect time (with phase breakdown: mint ‖ mic, SDP, data channel), **turn → first audio** (approximate: VAD `speech_stopped` or typed question → `output_audio_buffer.started` as received; excludes VAD's own wait and the jitter buffer), tool calls/failures, slide changes, interruptions (voice/button), cancelled responses, grounding flags, server errors, reconnects, and a timestamped event log carrying both the client session id (also in server logs) and the Realtime session id. **Copy JSON** exports it.
 
 ---
 
-## Testing
+## Evaluation
 
-### Automated (no API key required) — `npm test`
+### 1. Deterministic tests — `npm test`
 
-```
- ✓ shared/test/presentation.test.ts       slide metadata, slide-number + tool-arg validation, tool ⇄ Zod parity, instructions
- ✓ server/test/env.test.ts                config defaults, invalid values, key never echoed
- ✓ server/test/realtimeSession.test.ts    session config (GA shape, VAD, barge-in, single tool), secret minting,
-                                          missing credentials (503), upstream 401/403/400/429/5xx/timeout/network/malformed
- ✓ server/test/app.test.ts                /api/health, session route validation, no-store, JSON errors, rate limit, CORS, 404
- ✓ client/test/presenterController.test.ts  tool dispatch, dedupe, malformed/invalid/unknown calls, failed responses,
-                                          next_sentence deferral + timeout, the "Wait, explain tool calling instead" barge-in
-                                          scenario, cancelled-response tool calls, manual interrupt event order, status lifecycle
- Test Files  5 passed (5)   Tests  100 passed (100)
-```
+Unit, integration and **scenario traces** (`client/test/scenarios.test.ts`) that replay exact Realtime event orderings through the production controller: interruption *before*, *during* (deferred transition) and *after* navigation; `response.done(completed)` racing `speech_started`; rapid consecutive turns with duplicate delivery; malformed tool arguments; connection loss and recovery. These validate client logic only — not audio, VAD or model behaviour.
 
-### Manual end-to-end checklist (requires `OPENAI_API_KEY` + microphone)
+### 2. Live voice evaluation — `npm run eval:voice`
 
-| # | Check | How |
+Following the idea that voice agents should be evaluated **in voice**, the harness:
+
+- **Speaks** each caller line as synthesized audio (`gpt-4o-mini-tts`, cached on disk so reruns use identical input audio) and streams it in real time as 100 ms microphone frames, with continuous silence between turns — so server VAD decides when turns end, exactly as with a person.
+- Uses the **production** `buildSessionConfig()` (same prompt, tool, VAD, barge-in) and the **production** `PresenterController` (same tool dispatch, stale-response guards, diagnostics).
+- Differs in transport: Node has no browser WebRTC, so it uses the Realtime **WebSocket** and therefore performs the documented WebSocket client duties itself — a real-time playback clock and `conversation.item.truncate` with `audio_end_ms` on barge-in.
+- Scores **deterministic checks** (navigation, no overlapping responses, no stale navigation, exactly-once tool outputs, grounding audit, latency) and **LLM-judge checks** for semantic criteria (labelled `[judge]`; `--no-judge` to disable).
+- Writes `evals/results/<timestamp>.{json,md}` with per-check failure reasons, the event timeline, timings and ASR word error rate. Exits non-zero on failure (CI-ready). `--repeat=N` reports pass *rates*; `--persona=rushed` changes the caller; `--eagerness=` / `--vad=server` A/B turn detection.
+
+| ID | Scenario | Pass criteria (abridged) |
 |---|---|---|
-| A | App starts | `npm run dev` → both servers log ready; `curl localhost:3001/api/health` shows `openaiConfigured: true` |
-| B | Real Realtime session | Click **Start presenter** → status goes Connecting → Listening; header shows "Live · Realtime"; presenter greets you |
-| C | Natural voice Q&A | Ask anything; you hear `marin` answer; transcript shows both sides |
-| D | Tool calling → slide 3 | "How does an AI agent use tools?" → toast "Presenter moved to slide 3" |
-| E | Memory/RAG → slide 4 | "Explain memory and RAG." |
-| F | Multi-agent → slide 5 | "What happens when multiple agents collaborate?" |
-| G | Production safety → slide 6 | "What are the main production risks?" |
-| H | Follow-up stays put | On slide 4: "What's a reranker?" → answers without a navigation event |
-| I | Barge-in | While it explains slide 2, say "Wait, explain tool calling instead." → audio stops within ~½ s, bubble tagged *interrupted*, moves to slide 3, answers |
-| J | Prev/next | Buttons, dots, outline, ←/→ keys |
-| K | States | Watch the status card change through Listening/Thinking/Speaking/Interrupted |
-| L | Failure modes | Refresh mid-session (clean restart); deny mic ("Microphone access was blocked…"); toggle Wi-Fi off ("The voice connection was lost…"); blank key ("The server has no OPENAI_API_KEY…"); bad key ("OpenAI rejected the server's API key…") |
-| M | No key exposure | `npm run build && npm run check:bundle`; DevTools → Network: `/api/realtime/session` returns only `ek_…`; `/v1/realtime/calls` uses `Bearer ek_…` |
+| A | "How does the agent use tools?" | → slide 3; audio answer; judge: explains propose/validate/execute; no ungrounded numbers |
+| B | …then "Why do we need that?" | no navigation in turn 2; still slide 3; judge: answer refers back to tool calling |
+| C | On slide 3: "Actually, explain interruption handling." | → slide 4; judge: covers cancel + truncate/stale actions |
+| D | Interrupt after ~1.5 s of a slide-2 explanation | barge-in detected; server stops the old stream ≤ 1.5 s; cancelled promptly; final slide 4; no stale navigation; judge: new intent handled |
+| E | After greeting: "Can you explain that better?" | no navigation; judge: clarifies or re-explains the slide on screen |
+| F | "What's the weather in Boston tomorrow?" | no navigation; no numbers; judge: acknowledges it's out of scope, no forecast |
+| G | Two questions ~0.4 s apart | final slide 6; no overlapping responses; no stale navigation; exactly-once outputs; judge: answers the latest |
+| H | Navigation handler forced to throw | slide unchanged; `ok:false` returned; judge: no false success claim |
+| I | Socket killed mid-session, then reconnect | error state shown; new Realtime session; navigation works after reconnect |
+| J | "What % of voice agents fail? Which study?" | grounding audit clean; judge: no invented statistic or study |
+| K | "So can you explain how the agent handles…" *(1 s pause)* "…being interrupted while it's talking?" | no response starts during the pause; final slide 4 — measures the turn-detection trade-off |
+
+#### Results (this machine, 2026-10-16, `gpt-realtime` / `marin`, clear caller, judge `gpt-4.1-mini`, one run per scenario per setting)
+
+| Run | A–J pass | Caller stops → first audio (median / p90) | VAD end-of-turn → first audio (median / p90) | Barge-in → cancelled (median) |
+|---|---|---|---|---|
+| semantic VAD `auto` (previous default) | **10/10** | 2,426 ms / 4,754 ms | 533 ms / 701 ms | 42 ms |
+| semantic VAD `high` | **10/10** | 2,086 ms / 3,318 ms | 463 ms / 668 ms | 81 ms |
+| **server VAD, 500 ms silence (default now)** | **10/10** | **1,304 ms / 1,395 ms** | 510 ms / 594 ms | 6 ms |
+
+Scenario **K** (mid-thought pause, tracking): **0/6 strict passes across all three settings** — every configuration started answering the fragment during the 1 s pause — but **6/6 recovered** via barge-in and ended on the right slide. Caveat: synthesized speech reads the fragment with sentence-final intonation, which is harder on semantic VAD than a real mid-thought pause would be.
+
+#### Turn detection A/B — what the data says
+
+- **The model is not the bottleneck.** From the server's end-of-turn event to first audio is ~0.5 s in every setting. The cue-before-tool prompt keeps it there even when a slide change is needed.
+- **End-of-turn detection is.** Semantic VAD waited 1–4 s after some clearly finished questions (the same cached audio for "How does the agent use tools?" took ≈2.8 s every run at `auto`).
+- **server_vad halves the median and removes the long tail** with no loss in A–J. Its cost is visible too: in D it split "Wait, explain interruption handling instead" at the comma, and ASR WER rose from 0.00 to 0.06. Barge-in recovers those splits, but users with long pauses would feel it.
+- **Decision:** `server_vad` (500 ms) is the default; `OPENAI_TURN_DETECTION=semantic_vad` restores the previous behaviour. Re-run `npm run eval:voice -- --vad=semantic` with real recorded callers before treating this as settled.
+
+Other measurements: the browser connect went from 4.3 s to 2.8 s after opening the mic in parallel with credential minting (one sample each; mint 813 ms ‖ mic 198 ms, SDP 964 ms, data channel 1,044 ms). ASR word error on synthetic callers: 0.00–0.06.
 
 ---
 
-## Two-minute demo script
+## Manual checklist (browser, real microphone)
 
-1. **(0:00) Frame it.** "VoxDeck is a presentation that presents itself. The voice is OpenAI's Realtime model over WebRTC; the slides are driven by real function calls." Click **Start presenter**. It greets you.
-2. **(0:15) Routing.** Ask: *"How does an AI agent use tools?"* It jumps to slide 3. Point at the toast showing the tool's `reason`. "That was a `navigate_to_slide` call, validated with Zod in the browser, and the result fed back so it keeps talking."
-3. **(0:40) Meta moment.** "This slide's example is the app itself: the model emits the call, my code validates and executes it."
-4. **(0:50) Follow-up.** Ask: *"Why validate the arguments?"* It answers without moving: follow-ups don't navigate.
-5. **(1:05) Barge-in.** Click slide 2 and ask *"Walk me through this loop."* Mid-sentence, say: ***"Wait — explain memory and RAG instead."*** It stops instantly, the bubble is tagged *interrupted*, it moves to slide 4 and answers. "Server VAD cancels the response and truncates unplayed audio. The client also discards anything the cancelled response still had in flight, including tool calls."
-6. **(1:35) Production.** Ask: *"What would break this in production?"* It goes to slide 6 and cites the 0.95¹⁰ ≈ 60% compounding stat.
-7. **(1:55) Close.** "The API key never leaves the server; the browser only ever sees a 2-minute ephemeral key."
+| | Check | How |
+|---|---|---|
+| ☐ | Start | `npm run dev`; `/api/health` shows `openaiConfigured: true` |
+| ☐ | Session | Start presenter → Connecting → Listening; greeting heard |
+| ☐ | Voice Q&A | Ask by voice; answer heard; transcript shows both sides |
+| ☐ | Navigation | tools → 3 · interruption → 4 · grounding → 5 · evaluation → 6 (toast shows the tool's reason) |
+| ☐ | Follow-up | "Why does that matter?" stays on the slide |
+| ☐ | Barge-in | Talk over an answer: audio stops ≈ immediately, bubble tagged *interrupted*, diagnostics shows `interrupt.auto` + cancelled response |
+| ☐ | Controls | Prev/next/dots/outline/←→; mute (M); Interrupt (Esc); diagnostics (D) |
+| ☐ | Failures | Deny mic · disconnect network · blank key · invalid key → clear message + Reconnect |
+| ☐ | Secrets | `npm run build && npm run check:bundle`; Network tab shows only `ek_…` credentials |
 
-### Three design decisions worth discussing
+---
 
-1. **Execute tools on `response.done`, not on `function_call_arguments.done`.** The arguments event also fires for interrupted responses. Gating on the response's final status and a stale-response set means a barge-in can never cause a "ghost" slide change. Cancelled calls still get a `function_call_output` so conversation history stays well-formed, but without `response.create`, so the model doesn't talk over the user.
-2. **The server fixes the whole session inside the ephemeral secret.** Instructions, tool list, VAD, voice and TTL are minted server-side; the browser sends only `{ currentSlide }`. That keeps the real key server-only and also stops a tampered client from adding tools or rewriting the prompt. One small, testable `buildSessionConfig()` is the contract.
-3. **Framework-free controller; React state is the source of truth for the screen.** All Realtime event handling lives in `PresenterController` (no React, no WebRTC), so the hardest behaviour (dedupe, deferral, interruption, epochs) is covered by deterministic unit tests with a fake clock. The model learns what's on screen only from tool results and `[deck]` notes, never by assuming.
+## Two-minute demo
+
+1. **(0:00)** "A presentation that presents itself — and can be interrupted." Headphones on, **Start presenter**, press **D** to show diagnostics alongside.
+2. **(0:15)** Ask *"How does the agent use tools?"* — it says a short cue, the slide moves to 3, it explains. Point at `tool.call → nav.executed → tool.result ok` and the turn → audio time.
+3. **(0:40)** Follow-up *"Why do we need that?"* — no navigation; context kept.
+4. **(0:55)** Ask about slide 2, then cut in: *"Wait — explain interruption handling instead."* Audio stops, the bubble is tagged *interrupted*, `interrupt.auto` and a `cancelled` response appear, it lands on slide 4.
+5. **(1:20)** *"What percentage of voice agents fail in production?"* — it says the deck has no such figure instead of inventing one. Point at the sources line on each slide.
+6. **(1:35)** Show `evals/results/*.md`: ten scenarios spoken into the live model, the VAD A/B table, and scenario K as an honest open issue.
+7. **(1:55)** "The model handles language; code owns the invariants; the eval decides the settings."
 
 ---
 
 ## Known limitations
 
-- **Live voice behaviour was not verified in this build environment.** No API key or microphone was available, so checks B–I and the live parts of L are untested here. Everything up to the network boundary is covered by automated tests, and the integration follows the GA docs. Run the manual checklist before the interview.
-- `next_sentence` waits for the *current audio buffer* to finish (bounded at 2.5 s). It's a close proxy for a sentence boundary, not an exact one.
-- The transcript shows the model's generated text. After a barge-in, a bit more text may appear than was actually spoken. (The server-side conversation is truncated correctly.)
-- Speaker echo can trigger false interruptions without headphones.
-- Desktop-first layout (min width 1024 px). Single user per tab; no persistence by design.
-- The in-memory rate limiter is per-process, which is fine for a local demo.
+- **False barge-ins from the room.** In a live browser test with laptop speakers, short sounds were transcribed as "Yeah." / "Goodbye." and interrupted the presenter. Interruption is the API's server-side VAD; the client cannot un-cancel a response. Mitigations: headphones (recommended), `server_vad` with a higher threshold, or a confirmed-barge-in design (`interrupt_response: false` and cancel client-side only once speech is long enough) — the latter trades interruption latency for robustness and is not implemented.
+- **Turn-end latency is dominated by VAD**, not the model. The `server_vad` default trades some robustness to mid-sentence pauses for ~1 s lower median latency; scenario K documents that neither setting waits out a 1 s pause on synthetic speech.
+- Live eval runs are single samples by default and model behaviour is stochastic; use `--repeat` before drawing conclusions. The LLM judge can itself be wrong; its reasons are recorded for review.
+- The eval harness uses the WebSocket transport; the WebRTC path is covered by the browser checklist and diagnostics, not by the harness.
+- Latency numbers are wall-clock approximations from one machine and network.
+- `next_sentence` transitions wait for the current audio buffer (≤ 2.5 s), a proxy for a sentence boundary.
+- The grounding audit is a heuristic (numbers, citation phrasing); it does not verify meaning.
+- Desktop-first (≥ 1024 px). Per-process rate limiter. No persistence by design.

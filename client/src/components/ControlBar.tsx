@@ -94,6 +94,7 @@ export function ControlBar(p: Props) {
         <span><Kbd>←</Kbd> <Kbd>→</Kbd> slides</span>
         <span><Kbd>M</Kbd> mute</span>
         <span><Kbd>Esc</Kbd> interrupt</span>
+        <span><Kbd>D</Kbd> diagnostics</span>
       </div>
     </footer>
   );

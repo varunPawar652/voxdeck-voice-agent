@@ -1,4 +1,5 @@
-import { ArrowDown, ArrowRight, Bot, Brain, Database, Eye, Layers, Network, Search, ShieldCheck, Sparkles, Wrench, Zap } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { ArrowRight, Brain, CircleHelp, Ear, FlaskConical, Gauge, Layers, ListChecks, ScanEye, ShieldCheck, Sparkles, Volume2 } from 'lucide-react';
 import type { DiagramConfig } from '@voxdeck/shared';
 
 type Of<K extends DiagramConfig['kind']> = Extract<DiagramConfig, { kind: K }>;
@@ -11,12 +12,12 @@ export function Diagram({ config }: { config: DiagramConfig }) {
       return <AgentLoopDiagram config={config} />;
     case 'tool-sequence':
       return <ToolSequenceDiagram config={config} />;
-    case 'memory-tiers':
-      return <MemoryDiagram config={config} />;
-    case 'orchestration':
-      return <OrchestrationDiagram config={config} />;
-    case 'production':
-      return <ProductionDiagram config={config} />;
+    case 'interruption':
+      return <InterruptionDiagram config={config} />;
+    case 'layers':
+      return <LayersDiagram config={config} />;
+    case 'pillars':
+      return <PillarsDiagram config={config} />;
   }
 }
 
@@ -34,7 +35,7 @@ function EvolutionDiagram({ config }: { config: Of<'evolution'> }) {
                 last ? 'border-accent/50 bg-accent/8 shadow-[0_0_40px_-12px] shadow-accent/40' : 'border-white/8 bg-ink-850/80'
               }`}
             >
-              <span className={`font-mono text-xs ${last ? 'text-accent' : 'text-ink-400'}`}>{stage.era}</span>
+              <span className={`font-mono text-xs ${last ? 'text-accent' : 'text-ink-400'}`}>{stage.tag}</span>
               <div>
                 <div className="mb-3 h-1 rounded-full bg-ink-700">
                   <div className={`h-1 rounded-full ${last ? 'bg-accent' : 'bg-ink-400'}`} style={{ width: `${(i + 1) * 25}%` }} />
@@ -51,7 +52,7 @@ function EvolutionDiagram({ config }: { config: Of<'evolution'> }) {
   );
 }
 
-const loopIcons = [Eye, Brain, Zap];
+const loopIcons = [Ear, Brain, Volume2];
 
 function AgentLoopDiagram({ config }: { config: Of<'agent-loop'> }) {
   // Three steps evenly spaced on a circle around the LLM core.
@@ -79,7 +80,7 @@ function AgentLoopDiagram({ config }: { config: Of<'agent-loop'> }) {
           <span className="mt-1 text-sm font-semibold">{config.core}</span>
         </div>
         {config.steps.map((step, i) => {
-          const Icon = loopIcons[i] ?? Zap;
+          const Icon = loopIcons[i] ?? Brain;
           const p = positions[i]!;
           return (
             <div
@@ -156,17 +157,68 @@ function ToolSequenceDiagram({ config }: { config: Of<'tool-sequence'> }) {
   );
 }
 
-function MemoryDiagram({ config }: { config: Of<'memory-tiers'> }) {
-  const icons = [Layers, Bot, Database];
+function InterruptionDiagram({ config }: { config: Of<'interruption'> }) {
+  // A schematic timeline: the presenter is talking, the user barges in at ~48%.
+  const cut = 48;
+  return (
+    <div className="flex h-full flex-col justify-center gap-5">
+      <div className="space-y-3">
+        <Track label="Presenter" marker={cut}>
+          <div className="absolute inset-y-0 left-0 flex items-center rounded-md bg-accent/25 px-2 text-xs text-ink-100" style={{ width: `${cut}%` }}>
+            Explaining slide 2…
+          </div>
+          <div
+            className="absolute inset-y-0 flex items-center rounded-md border border-dashed border-ink-600 px-2 text-[11px] text-ink-400 line-through decoration-ink-600"
+            style={{ left: `${cut}%`, width: '22%' }}
+          >
+            unplayed audio
+          </div>
+          <div className="absolute inset-y-0 flex items-center rounded-md bg-accent/25 px-2 text-xs text-ink-100" style={{ left: '72%', right: 0 }}>
+            New answer
+          </div>
+        </Track>
+        <Track label="You" marker={cut}>
+          <div className="absolute inset-y-0 flex items-center truncate rounded-md bg-warn/20 px-2 text-xs text-warn" style={{ left: `${cut}%`, width: '34%' }}>
+            {config.userUtterance}
+          </div>
+        </Track>
+      </div>
+      <ol className="grid grid-cols-5 gap-2">
+        {config.steps.map((step, i) => (
+          <li key={step.event} className={`${card} p-2.5`}>
+            <p className="font-mono text-[10px] text-ink-400">{i + 1}</p>
+            <p className={`font-mono text-xs ${i === 0 ? 'text-warn' : 'text-accent'}`}>{step.event}</p>
+            <p className="mt-0.5 text-[11px] leading-snug text-ink-300">{step.detail}</p>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function Track({ label, marker, children }: { label: string; marker: number; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-17 shrink-0 text-right text-xs font-medium text-ink-300">{label}</span>
+      <div className="relative h-8 flex-1 rounded-md bg-ink-950/50">
+        {children}
+        <div className="absolute -inset-y-1.5 w-0.5 rounded bg-warn" style={{ left: `${marker}%` }} aria-hidden />
+      </div>
+    </div>
+  );
+}
+
+function LayersDiagram({ config }: { config: Of<'layers'> }) {
+  const icons = [ShieldCheck, Layers, CircleHelp];
   return (
     <div className="flex h-full flex-col gap-4">
       <div className="flex flex-1 flex-col justify-center gap-2">
         {config.tiers.map((tier, i) => {
           const Icon = icons[i] ?? Layers;
           return (
-            <div key={tier.label} className="mx-auto flex w-full items-center gap-3" style={{ maxWidth: `${70 + i * 15}%` }}>
+            <div key={tier.label} className="mx-auto flex w-full items-center gap-3" style={{ maxWidth: `${100 - i * 12}%` }}>
               <div className={`${card} flex flex-1 items-center gap-3 px-4 py-2.5 ${i === 0 ? 'border-accent/40 bg-accent/8' : ''}`}>
-                <Icon className={`size-4 shrink-0 ${i === 0 ? 'text-accent' : 'text-violet'}`} aria-hidden />
+                <Icon className={`size-4 shrink-0 ${i === 0 ? 'text-accent' : i === 1 ? 'text-violet' : 'text-warn'}`} aria-hidden />
                 <span className="font-semibold">{tier.label}</span>
                 <span className="font-mono text-[11px] text-ink-400">{tier.scope}</span>
                 <span className="ml-auto hidden text-sm text-ink-300 md:inline">{tier.example}</span>
@@ -177,7 +229,7 @@ function MemoryDiagram({ config }: { config: Of<'memory-tiers'> }) {
       </div>
       <div className={`${card} p-3`}>
         <p className="mb-2 flex items-center gap-1.5 text-xs font-medium tracking-wider text-ink-400 uppercase">
-          <Search className="size-3" aria-hidden /> RAG pipeline
+          <ListChecks className="size-3" aria-hidden /> {config.pipelineLabel}
         </p>
         <div className="flex items-center gap-1.5">
           {config.pipeline.map((step, i) => (
@@ -192,46 +244,8 @@ function MemoryDiagram({ config }: { config: Of<'memory-tiers'> }) {
   );
 }
 
-function OrchestrationDiagram({ config }: { config: Of<'orchestration'> }) {
-  return (
-    <div className="flex h-full gap-6">
-      <div className="flex flex-1 flex-col items-center justify-center gap-1">
-        <div className="flex items-center gap-2 rounded-xl border border-accent/50 bg-accent/10 px-5 py-2.5 font-semibold shadow-[0_0_40px_-12px] shadow-accent/50">
-          <Network className="size-4 text-accent" aria-hidden /> {config.orchestrator}
-        </div>
-        <div className="relative h-6 w-2/3" aria-hidden>
-          <div className="absolute top-0 left-1/2 h-3 w-px bg-ink-600" />
-          <div className="absolute top-3 right-[16.6%] left-[16.6%] h-px bg-ink-600" />
-          {[16.6, 50, 83.4].map((x) => (
-            <div key={x} className="absolute top-3 h-3 w-px bg-ink-600" style={{ left: `${x}%` }} />
-          ))}
-        </div>
-        <div className="grid w-full grid-cols-3 gap-3">
-          {config.workers.map((w) => (
-            <div key={w.label} className={`${card} px-3 py-2.5 text-center`}>
-              <Bot className="mx-auto mb-1 size-4 text-violet" aria-hidden />
-              <p className="text-sm font-semibold">{w.label}</p>
-              <p className="text-[11px] text-ink-300">{w.task}</p>
-            </div>
-          ))}
-        </div>
-        <ArrowDown className="my-1 size-4 text-ink-600" aria-hidden />
-        <div className={`${card} px-4 py-2 text-sm font-medium`}>{config.aggregator}</div>
-      </div>
-      <div className="flex w-40 flex-col justify-center gap-2">
-        <p className="text-xs font-medium tracking-wider text-ink-400 uppercase">Patterns</p>
-        {config.patterns.map((p) => (
-          <span key={p} className={`rounded-lg px-3 py-1.5 text-sm ${p === 'Orchestrator–workers' ? 'bg-accent/15 text-accent' : 'bg-ink-800 text-ink-200'}`}>
-            {p}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ProductionDiagram({ config }: { config: Of<'production'> }) {
-  const icons = [ShieldCheck, Wrench, Eye];
+function PillarsDiagram({ config }: { config: Of<'pillars'> }) {
+  const icons = [FlaskConical, Gauge, ScanEye];
   return (
     <div className="flex h-full flex-col gap-4">
       <div className="grid flex-1 grid-cols-3 gap-3">

@@ -10,9 +10,10 @@ export const navigateToSlideTool = {
   type: 'function',
   name: NAVIGATE_TOOL_NAME,
   description:
-    'Show a different slide in the live presentation. Call this BEFORE explaining a topic whenever ' +
-    'the best slide for the user\'s question is not the slide currently on screen. Do not call it ' +
-    'for follow-ups about the current slide. The result contains the slide content to explain.\n' +
+    'Show a different slide in the live presentation. Call this before explaining a topic whenever the ' +
+    'best slide for the user\'s question is not the slide on screen (a cue of a few words may come first). ' +
+    'Do not call it for follow-ups, greetings, or off-topic questions. The result contains the slide ' +
+    'content to explain; only say the slide changed if the result has ok: true.\n' +
     slides.map((s) => `${s.number}: ${s.title} — ${s.keywords.slice(0, 8).join(', ')}`).join('\n'),
   parameters: {
     type: 'object',

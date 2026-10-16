@@ -36,9 +36,18 @@ export class RealtimeConnection {
     private readonly handlers: ConnectionHandlers,
   ) {}
 
-  async connect(clientSecret: string, signal?: AbortSignal): Promise<void> {
-    // 1. Microphone. Echo cancellation is essential for barge-in on laptop speakers —
-    //    without it the model hears itself and "interrupts" its own answer.
+  /** Phase timings of the last connect(), for diagnostics. */
+  timings = { micMs: 0, sdpMs: 0, channelMs: 0 };
+
+  /**
+   * Opens the microphone. Separate from connect() so callers can run it in parallel
+   * with minting the session credential (saves up to ~1 s of connect time).
+   */
+  async prepareMicrophone(): Promise<void> {
+    if (this.micStream) return;
+    const started = performance.now();
+    // Echo cancellation is essential for barge-in on laptop speakers —
+    // without it the model hears itself and "interrupts" its own answer.
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -54,7 +63,14 @@ export class RealtimeConnection {
         'microphone',
       );
     }
+    this.timings.micMs = Math.round(performance.now() - started);
+  }
+
+  async connect(clientSecret: string, signal?: AbortSignal): Promise<void> {
+    // 1. Microphone (usually already opened by prepareMicrophone()).
+    await this.prepareMicrophone();
     if (signal?.aborted) throw new ConnectionError('Connection cancelled.', 'closed');
+    const micStream = this.micStream!;
 
     // 2. Peer connection: our mic out, the model's voice in.
     const pc = new RTCPeerConnection();
@@ -66,7 +82,7 @@ export class RealtimeConnection {
         /* autoplay is allowed: connect() is always triggered by a click */
       });
     };
-    for (const track of this.micStream.getAudioTracks()) pc.addTrack(track, this.micStream);
+    for (const track of micStream.getAudioTracks()) pc.addTrack(track, micStream);
 
     pc.onconnectionstatechange = () => {
       if (this.closedByUser) return;
@@ -94,6 +110,7 @@ export class RealtimeConnection {
     };
 
     // 4. SDP exchange directly with OpenAI, authenticated by the short-lived secret.
+    const sdpStarted = performance.now();
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
@@ -112,8 +129,11 @@ export class RealtimeConnection {
       throw new ConnectionError(await describeCallFailure(response), 'upstream');
     }
     await pc.setRemoteDescription({ type: 'answer', sdp: await response.text() });
+    this.timings.sdpMs = Math.round(performance.now() - sdpStarted);
 
+    const channelStarted = performance.now();
     await withTimeout(opened, 10_000, new ConnectionError('Timed out waiting for the voice session to open.', 'network'));
+    this.timings.channelMs = Math.round(performance.now() - channelStarted);
     this.handlers.onOpen();
   }
 

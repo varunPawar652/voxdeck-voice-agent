@@ -10,8 +10,17 @@ const envSchema = z.object({
   OPENAI_REALTIME_VOICE: z.string().trim().min(1).default('marin'),
   OPENAI_TRANSCRIPTION_MODEL: z.string().trim().min(1).default('gpt-4o-mini-transcribe'),
   CLIENT_SECRET_TTL_SECONDS: z.coerce.number().int().min(10).max(7200).default(120),
+  // Semantic VAD eagerness: higher = faster replies but more risk of cutting the user off.
+  OPENAI_VAD_EAGERNESS: z.enum(['low', 'medium', 'high', 'auto']).default('auto'),
+  // server_vad (silence timer) is the default: in the live voice eval it halved median turn → audio
+  // latency vs semantic_vad with no loss in scenario pass rate. See README "Turn detection A/B".
+  OPENAI_TURN_DETECTION: z.enum(['semantic_vad', 'server_vad']).default('server_vad'),
+  OPENAI_VAD_SILENCE_MS: z.coerce.number().int().min(200).max(2000).default(500),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });
+
+export type VadEagerness = 'low' | 'medium' | 'high' | 'auto';
+export type TurnDetectionType = 'semantic_vad' | 'server_vad';
 
 export interface AppConfig {
   nodeEnv: 'development' | 'production' | 'test';
@@ -22,6 +31,9 @@ export interface AppConfig {
   realtimeVoice: string;
   transcriptionModel: string;
   clientSecretTtlSeconds: number;
+  vadEagerness: VadEagerness;
+  turnDetection: TurnDetectionType;
+  vadSilenceMs: number;
   logLevel: string;
 }
 
@@ -49,6 +61,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     realtimeVoice: e.OPENAI_REALTIME_VOICE,
     transcriptionModel: e.OPENAI_TRANSCRIPTION_MODEL,
     clientSecretTtlSeconds: e.CLIENT_SECRET_TTL_SECONDS,
+    vadEagerness: e.OPENAI_VAD_EAGERNESS,
+    turnDetection: e.OPENAI_TURN_DETECTION,
+    vadSilenceMs: e.OPENAI_VAD_SILENCE_MS,
     logLevel: e.LOG_LEVEL,
   };
 }

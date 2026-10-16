@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Lightbulb, Navigation } from 'lucide-react';
+import { ExternalLink, Lightbulb, Navigation } from 'lucide-react';
 import { SLIDE_COUNT, getSlide } from '@voxdeck/shared';
 import type { NavigationRecord } from '../lib/presenterController.ts';
 import { Diagram } from './diagrams/Diagrams.tsx';
@@ -64,12 +64,38 @@ export function SlideStage({ slideNumber, lastNavigation, navigatedByAgent }: Pr
           <div className="flex gap-3 rounded-xl border border-violet/20 bg-violet/6 p-3">
             <Lightbulb className="mt-0.5 size-4 shrink-0 text-violet" aria-hidden />
             <div>
-              <p className="text-sm font-semibold text-ink-100">{slide.example.label}</p>
+              <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-100">
+                {capitalize(slide.example.label.replace(/^Illustrative:\s*/, ''))}
+                {slide.example.illustrative && (
+                  <span className="rounded bg-violet/15 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-violet uppercase">Illustrative</span>
+                )}
+              </p>
               <p className="mt-0.5 text-xs leading-relaxed text-ink-300">{slide.example.text}</p>
             </div>
           </div>
         </footer>
+        {slide.sources.length > 0 && (
+          <p className="-mt-2 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-400">
+            <span className="font-medium tracking-wider uppercase">Sources</span>
+            {slide.sources.map((s) => (
+              <a
+                key={s.url + s.label}
+                href={s.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded underline decoration-ink-600 underline-offset-2 hover:text-accent focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+              >
+                {s.label}
+                <ExternalLink className="size-3" aria-hidden />
+              </a>
+            ))}
+          </p>
+        )}
       </article>
     </section>
   );
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }

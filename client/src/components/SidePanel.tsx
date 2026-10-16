@@ -1,15 +1,15 @@
 import { useEffect, useRef } from 'react';
-import { AlertTriangle, MessageSquareText, Navigation, Sparkles } from 'lucide-react';
+import { AlertTriangle, MessageSquareText, Navigation, ShieldAlert, Sparkles } from 'lucide-react';
 import { slides } from '@voxdeck/shared';
 import { useAudioLevel } from '../hooks/useAudioLevel.ts';
 import type { PresenterStatus, TranscriptEntry } from '../lib/presenterController.ts';
 import { statusMeta } from './status.ts';
 
 export const EXAMPLE_QUESTIONS = [
-  'How does an AI agent use tools?',
-  'Explain memory and RAG.',
-  'What happens when multiple agents collaborate?',
-  'What are the main production risks?',
+  'How does the agent use tools?',
+  'Explain interruption handling.',
+  'How do you keep answers grounded?',
+  'How do you evaluate a voice agent?',
 ];
 
 interface Props {
@@ -155,6 +155,14 @@ function TranscriptLine({ entry }: { entry: TranscriptEntry }) {
       >
         {entry.text || <span className="text-ink-400 italic">{user ? 'Listening…' : '…'}</span>}
         {entry.state === 'interrupted' && <span className="ml-1.5 rounded bg-warn/15 px-1.5 py-0.5 text-[10px] font-medium text-warn">interrupted</span>}
+        {entry.groundingFlags && (
+          <span
+            className="mt-1 flex items-center gap-1 text-[10px] text-warn"
+            title={`Grounding audit (heuristic): ${entry.groundingFlags.join('; ')}`}
+          >
+            <ShieldAlert className="size-3" aria-hidden /> Contains a claim not found in the deck
+          </span>
+        )}
       </div>
     </div>
   );

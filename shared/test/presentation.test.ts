@@ -39,22 +39,40 @@ describe('slide metadata', () => {
   });
 
   it.each([
+    [2, 'architecture'],
     [3, 'function calling'],
     [3, 'tools'],
-    [4, 'rag'],
-    [4, 'memory'],
-    [5, 'multi-agent'],
-    [5, 'orchestration'],
-    [6, 'safety'],
+    [4, 'interruption'],
+    [4, 'barge-in'],
+    [5, 'grounding'],
+    [5, 'hallucination'],
+    [6, 'evaluation'],
     [6, 'observability'],
   ])('routes the keyword on slide %i: %s', (number, keyword) => {
     expect(getSlide(number)!.keywords).toContain(keyword);
+  });
+
+  it('every source is a well-formed https link with a label', () => {
+    for (const s of slides) {
+      for (const src of s.sources) {
+        expect(src.label.length).toBeGreaterThan(5);
+        expect(src.url).toMatch(/^https:\/\/[a-z0-9.-]+\.[a-z]{2,}\/\S*$/);
+      }
+    }
+  });
+
+  it('labels hypothetical examples as illustrative', () => {
+    for (const s of slides) {
+      if (s.example.illustrative) expect(s.example.label).toMatch(/^Illustrative/);
+      else expect(s.example.label).not.toMatch(/^Illustrative/);
+    }
   });
 
   it('getSlide returns undefined for out-of-range numbers', () => {
     expect(getSlide(0)).toBeUndefined();
     expect(getSlide(7)).toBeUndefined();
     expect(getSlide(3)?.id).toBe('tools');
+    expect(getSlide(4)?.id).toBe('interruptions');
   });
 });
 
@@ -117,8 +135,23 @@ describe('buildInstructions', () => {
     for (const s of slides) expect(text).toContain(`Slide ${s.number}: ${s.title}`);
   });
 
-  it('forbids claiming navigation without a tool result', () => {
-    expect(buildInstructions(1)).toMatch(/Never say you are moving.*unless/s);
+  it('forbids claiming navigation without a successful tool result', () => {
+    expect(buildInstructions(1)).toMatch(/Never say the slide has changed.*unless.*ok: true/s);
+  });
+
+  it('encodes the conversational and grounding policy', () => {
+    const text = buildInstructions(1);
+    expect(text).toMatch(/1–3 short sentences/);
+    expect(text).toMatch(/ask one short clarifying question/);
+    expect(text).toMatch(/Never invent statistics/);
+    expect(text).toMatch(/Do not navigate for greetings/);
+    expect(text).toMatch(/at most six words/);
+  });
+
+  it('marks illustrative examples and lists citable sources', () => {
+    const text = buildInstructions(1);
+    expect(text).toContain('Illustrative example (hypothetical — say so)');
+    expect(text).toContain('Stivers et al. (2009)');
   });
 });
 

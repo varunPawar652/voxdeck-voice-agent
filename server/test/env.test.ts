@@ -11,6 +11,8 @@ describe('loadConfig', () => {
       realtimeModel: 'gpt-realtime',
       realtimeVoice: 'marin',
       clientSecretTtlSeconds: 120,
+      turnDetection: 'server_vad',
+      vadSilenceMs: 500,
       openaiApiKey: undefined,
     });
   });

@@ -22,7 +22,7 @@ export function sessionRouter(sessions: RealtimeSessionService): Router {
     if (!parsed.success) {
       throw new HttpError(400, 'invalid_request', formatZodError(parsed.error));
     }
-    const session = await sessions.createSession({ currentSlide: parsed.data.currentSlide ?? 1 });
+    const session = await sessions.createSession({ currentSlide: parsed.data.currentSlide ?? 1, clientSessionId: parsed.data.clientSessionId });
     // Ephemeral credentials must never be cached by the browser or a proxy.
     res.setHeader('Cache-Control', 'no-store');
     res.json(session);

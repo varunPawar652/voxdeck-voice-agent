@@ -1,9 +1,9 @@
-import { AudioLines } from 'lucide-react';
+import { Activity, AudioLines } from 'lucide-react';
 import { PRESENTATION_TITLE } from '@voxdeck/shared';
 import type { PresenterStatus } from '../lib/presenterController.ts';
 import { statusMeta } from './status.ts';
 
-export function Header({ status }: { status: PresenterStatus }) {
+export function Header({ status, diagnosticsOpen, onToggleDiagnostics }: { status: PresenterStatus; diagnosticsOpen: boolean; onToggleDiagnostics(): void }) {
   const connection =
     status === 'idle' ? { label: 'Not connected', dot: 'bg-ink-400' }
     : status === 'connecting' ? { label: 'Connecting…', dot: 'bg-violet animate-pulse' }
@@ -22,7 +22,18 @@ export function Header({ status }: { status: PresenterStatus }) {
       </div>
       <div className="h-5 w-px bg-white/10" aria-hidden />
       <h1 className="truncate text-sm text-ink-300">{PRESENTATION_TITLE}</h1>
-      <div className="ml-auto flex items-center gap-2 rounded-full border border-white/8 bg-ink-850 px-3 py-1 text-xs" role="status" aria-live="polite">
+      <button
+        type="button"
+        onClick={onToggleDiagnostics}
+        aria-pressed={diagnosticsOpen}
+        title="Developer diagnostics (D)"
+        className={`ml-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-xs transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${
+          diagnosticsOpen ? 'bg-accent/15 text-accent' : 'text-ink-400 hover:bg-ink-850 hover:text-ink-200'
+        }`}
+      >
+        <Activity className="size-3.5" aria-hidden /> Diagnostics
+      </button>
+      <div className="flex items-center gap-2 rounded-full border border-white/8 bg-ink-850 px-3 py-1 text-xs" role="status" aria-live="polite">
         <span className={`size-2 rounded-full ${connection.dot}`} aria-hidden />
         <span className="text-ink-200">{connection.label}</span>
         <span className="sr-only">Presenter is {statusMeta[status].label}</span>

@@ -30,6 +30,18 @@ describe('buildSessionConfig', () => {
     });
   });
 
+  it('can use a plain silence-timer VAD, still with barge-in', () => {
+    const s = buildSessionConfig({ model: 'm', voice: 'v', transcriptionModel: 't', currentSlide: 1, turnDetection: 'server_vad', vadSilenceMs: 400 });
+    expect(s.audio?.input?.turn_detection).toEqual({
+      type: 'server_vad',
+      threshold: 0.5,
+      prefix_padding_ms: 300,
+      silence_duration_ms: 400,
+      create_response: true,
+      interrupt_response: true,
+    });
+  });
+
   it('transcribes user audio for the transcript panel', () => {
     expect(session.audio?.input?.transcription?.model).toBe('gpt-4o-mini-transcribe');
   });

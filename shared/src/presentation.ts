@@ -13,10 +13,15 @@ export interface KeyConcept {
   detail: string;
 }
 
+export interface SourceRef {
+  label: string;
+  url: string;
+}
+
 export type DiagramConfig =
   | {
       kind: 'evolution';
-      stages: { label: string; era: string; capability: string }[];
+      stages: { label: string; tag: string; capability: string }[];
     }
   | {
       kind: 'agent-loop';
@@ -30,19 +35,18 @@ export type DiagramConfig =
       messages: { from: number; to: number; label: string; code?: string }[];
     }
   | {
-      kind: 'memory-tiers';
+      kind: 'interruption';
+      userUtterance: string;
+      steps: { event: string; detail: string }[];
+    }
+  | {
+      kind: 'layers';
       tiers: { label: string; scope: string; example: string }[];
+      pipelineLabel: string;
       pipeline: string[];
     }
   | {
-      kind: 'orchestration';
-      orchestrator: string;
-      workers: { label: string; task: string }[];
-      aggregator: string;
-      patterns: string[];
-    }
-  | {
-      kind: 'production';
+      kind: 'pillars';
       pillars: { label: string; items: string[] }[];
       stat: { value: string; caption: string };
     };
@@ -54,44 +58,51 @@ export interface Slide {
   eyebrow: string;
   summary: string;
   keyConcepts: KeyConcept[];
-  example: { label: string; text: string };
+  /** `illustrative` examples are hypothetical and must be presented as such. */
+  example: { label: string; text: string; illustrative: boolean };
   speakerNotes: string;
   keywords: string[];
+  /** Only these may be cited. An empty list means the slide makes no sourced claims. */
+  sources: SourceRef[];
   diagram: DiagramConfig;
 }
 
-export const PRESENTATION_TITLE = 'How AI Agents Work: From LLMs to Autonomous Systems';
+export const PRESENTATION_TITLE = 'Building Reliable Voice AI Agents: Real-Time Interaction, Grounding, Safety and Evaluation';
 
 export const slides: readonly Slide[] = [
   {
-    id: 'evolution',
+    id: 'why-voice',
     number: 1,
     eyebrow: 'Foundations',
-    title: 'From Chatbots to AI Agents',
+    title: 'Why Voice Agents Are Different',
     summary:
-      'Each generation added one capability: understanding language, then taking actions, then pursuing goals across many steps without a human driving each one.',
+      'Voice removes the safety margin of text. People expect a reply within a conversational beat, they interrupt, and every mistake is heard the moment it is made.',
     keyConcepts: [
-      { term: 'Goal-directed', detail: 'Given an outcome, not a script.' },
-      { term: 'Action-taking', detail: 'Changes the world through tools and APIs.' },
-      { term: 'Iterative', detail: 'Observes results and decides the next step.' },
+      { term: 'Conversational timing', detail: 'Gaps between turns are typically around 200 ms.' },
+      { term: 'Barge-in', detail: 'People interrupt; the agent must stop and re-plan.' },
+      { term: 'Audible errors', detail: 'No scrollback — a wrong answer is heard live.' },
     ],
     example: {
-      label: 'Same request, four eras: "I want a refund for order 1042."',
-      text: 'A rule bot links the FAQ. An LLM explains the policy. A tool-using assistant looks up the order. An agent checks eligibility, issues the refund, and emails the receipt.',
+      label: 'Illustrative: the same question by text and by voice',
+      text: 'In chat, a three-second pause feels fine. On a call it sounds broken — and if the caller says "no, the other one" halfway through, a text-style agent keeps talking over them.',
+      illustrative: true,
     },
     speakerNotes:
-      'Frame the talk: the shift is from systems that answer to systems that act. Rule-based bots matched intents to scripts. LLM chat brought fluent language but no ability to act. Function calling let assistants hit APIs on request. Agents wrap the model in a loop so it can plan, act, observe, and repeat until a goal is met. Use the refund example to make the difference concrete.',
+      'Frame the talk: a reliable voice agent is a different engineering problem from a chatbot. Turn-taking research across ten languages found that gaps between conversational turns are typically around 200 milliseconds (Stivers et al., 2009). That sets the bar: answers must start quickly, the agent must yield when interrupted, and errors cannot be quietly edited. The progression on the slide: text chat; cascaded voice pipelines (speech-to-text, then an LLM, then text-to-speech) where latency adds up at every hop; speech-to-speech models that stream audio in and out; and finally a reliable voice agent that is also grounded, interruptible and evaluated.',
     keywords: [
-      'evolution', 'history', 'chatbot', 'chatbots', 'difference', 'what is an agent', 'definition',
-      'llm vs agent', 'autonomous', 'autonomy', 'introduction', 'overview', 'rule-based', 'generations',
+      'voice', 'why voice', 'introduction', 'overview', 'latency', 'response time', 'turn-taking', 'real-time',
+      'realtime', 'speech', 'chatbot', 'difference', 'cascaded', 'speech-to-speech', 'pipeline',
+    ],
+    sources: [
+      { label: 'Stivers et al. (2009), PNAS — turn-taking across 10 languages', url: 'https://www.pnas.org/doi/10.1073/pnas.0903616106' },
     ],
     diagram: {
       kind: 'evolution',
       stages: [
-        { label: 'Rule-based bot', era: '2016', capability: 'Matches intents to scripts' },
-        { label: 'LLM chat', era: '2022', capability: 'Understands and writes language' },
-        { label: 'Tool-using assistant', era: '2023', capability: 'Calls APIs when asked' },
-        { label: 'Autonomous agent', era: '2024+', capability: 'Plans, acts, observes, repeats' },
+        { label: 'Text chatbot', tag: 'Text', capability: 'Turn-based; a pause of seconds is fine' },
+        { label: 'Cascaded voice', tag: 'STT → LLM → TTS', capability: 'Latency adds up at every hop' },
+        { label: 'Speech-to-speech', tag: 'Realtime', capability: 'One model streams audio in and out' },
+        { label: 'Reliable voice agent', tag: 'Goal', capability: 'Grounded, interruptible, evaluated' },
       ],
     },
   },
@@ -99,33 +110,35 @@ export const slides: readonly Slide[] = [
     id: 'architecture',
     number: 2,
     eyebrow: 'Architecture',
-    title: 'Anatomy of an AI Agent',
+    title: 'Anatomy of a Real-Time Voice Agent',
     summary:
-      'An agent is an LLM inside a control loop. The model decides; ordinary code runs the loop, executes actions, enforces limits, and decides when to stop.',
+      'A speech-to-speech model handles listening and speaking. Ordinary code owns everything that must be deterministic: the session configuration, tool execution, what is on screen, and when an answer is stale.',
     keyConcepts: [
-      { term: 'Reasoning core', detail: 'The LLM chooses the next action from context.' },
-      { term: 'Control loop', detail: 'Observe → think → act, until done or out of budget.' },
-      { term: 'Stopping rules', detail: 'Goal reached, step limit, or a human hand-off.' },
+      { term: 'Model owns the conversation', detail: 'Understands speech, decides, speaks.' },
+      { term: 'Code owns the invariants', detail: 'Validates tools, owns UI state, enforces limits.' },
+      { term: 'Server-side session', detail: 'Instructions and tools are fixed before the browser connects.' },
     ],
     example: {
-      label: 'A coding agent fixing a failing test',
-      text: 'Reads the failing output (observe), suspects an off-by-one (think), edits the file and reruns tests (act), reads the new result (observe) — and stops when tests are green or after 10 attempts.',
+      label: 'This app',
+      text: 'Your microphone streams to the OpenAI Realtime API over WebRTC. The model hears the question, calls navigate_to_slide, the browser validates it and changes the slide, and the model keeps talking — while the API key never leaves the server.',
+      illustrative: false,
     },
     speakerNotes:
-      'Explain that the model itself is stateless and only predicts the next output. The agent is the system around it: instructions define the role, tools provide actions, memory provides context, and a loop controller feeds observations back in. Emphasize that stopping conditions and budgets are a design decision, not something the model handles on its own. Walk through the coding-agent loop.',
+      'Walk through the loop on the diagram. Listen: voice activity detection decides when the user has finished speaking. Reason: the model decides whether to answer or call a tool. Speak: audio streams back while the agent stays interruptible. Around the model sit the parts ordinary code must own: a server-side session configuration with fixed instructions and tools, tool handlers that validate their arguments, the trusted content answers are grounded in, and a client state machine that knows whether the agent is listening, thinking, speaking or interrupted. The rule of thumb: let the model handle language and judgment, and put product invariants in deterministic code.',
     keywords: [
-      'architecture', 'anatomy', 'components', 'loop', 'agent loop', 'react', 'reason', 'plan', 'planning',
-      'observe', 'control loop', 'how does an agent work', 'structure', 'design', 'stopping', 'budget',
+      'architecture', 'anatomy', 'components', 'how it works', 'put together', 'built', 'webrtc', 'loop',
+      'state machine', 'session', 'design', 'structure', 'model', 'system', 'stack',
     ],
+    sources: [{ label: 'OpenAI — Realtime API with WebRTC', url: 'https://developers.openai.com/api/docs/guides/voice-webrtc' }],
     diagram: {
       kind: 'agent-loop',
-      core: 'LLM',
+      core: 'Realtime model',
       steps: [
-        { label: 'Observe', detail: 'Read input & tool results' },
-        { label: 'Think', detail: 'Choose next action' },
-        { label: 'Act', detail: 'Call a tool or answer' },
+        { label: 'Listen', detail: 'VAD detects end of turn' },
+        { label: 'Reason', detail: 'Answer or call a tool' },
+        { label: 'Speak', detail: 'Stream audio, stay interruptible' },
       ],
-      modules: ['Instructions', 'Tools', 'Memory', 'Guardrails'],
+      modules: ['Server-side session config', 'Validated tools', 'Trusted slide content', 'Client state machine'],
     },
   },
   {
@@ -142,17 +155,19 @@ export const slides: readonly Slide[] = [
     ],
     example: {
       label: 'This presentation is the example',
-      text: 'When you ask about tool calling, the voice model emits navigate_to_slide({ slide_number: 3 }). The browser validates it with Zod, changes the slide, and sends the result back so the model keeps talking.',
+      text: 'When you ask about tool calling, the model emits navigate_to_slide({ slide_number: 3 }). The browser validates it with Zod, changes the slide, and sends the result back so the model keeps talking.',
+      illustrative: false,
     },
     speakerNotes:
-      'Walk through the round trip: the developer registers tools with names, descriptions, and parameter schemas. The model decides a tool is needed and returns a function call with a call id and JSON arguments. The application validates the arguments, executes the real API, and sends a function_call_output with the same call id. The model then uses that result in its answer. Point out the meta example: this deck itself is driven by a navigate_to_slide tool. Mention least privilege — only expose the tools the task needs.',
+      'Walk through the round trip: the developer registers tools with names, descriptions and parameter schemas. The model decides a tool is needed and returns a function call with a call id and JSON arguments. The application validates the arguments, executes the real action, and sends a function_call_output with the same call id; the model then uses that result in its answer. Point out the meta example: this deck is driven by a navigate_to_slide tool. Mention least privilege — expose only the tools the task needs — and that a failed tool must be reported as failed.',
     keywords: [
-      'tools', 'tool', 'tool use', 'tool calling', 'function calling', 'functions', 'api', 'apis',
-      'json schema', 'arguments', 'actions', 'integration', 'call', 'execute', 'plugins', 'mcp',
+      'tools', 'tool', 'tool use', 'tool calling', 'use tools', 'function calling', 'functions', 'api', 'apis',
+      'json schema', 'arguments', 'actions', 'integration', 'execute', 'mcp',
     ],
+    sources: [{ label: 'OpenAI — Realtime conversations: function calling', url: 'https://developers.openai.com/api/docs/guides/realtime-conversations' }],
     diagram: {
       kind: 'tool-sequence',
-      lanes: ['User', 'LLM', 'Your app', 'External API'],
+      lanes: ['User', 'Model', 'Your app', 'External API'],
       messages: [
         { from: 0, to: 1, label: '"Explain tool calling"' },
         { from: 1, to: 2, label: 'function_call', code: 'navigate_to_slide({ slide_number: 3 })' },
@@ -164,102 +179,113 @@ export const slides: readonly Slide[] = [
     },
   },
   {
-    id: 'memory',
+    id: 'interruptions',
     number: 4,
-    eyebrow: 'Context',
-    title: 'Memory, Context & Retrieval',
+    eyebrow: 'Real-time interaction',
+    title: 'Turn-Taking & Interruption Handling',
     summary:
-      'The context window is the agent\'s working memory — finite and expensive. Retrieval-augmented generation (RAG) fetches only the most relevant knowledge at the moment it is needed.',
+      'Voice activity detection decides when the user has finished — and when they start talking over the agent. On an interruption the response is cancelled, unplayed audio is truncated so history matches what was heard, and actions from the old answer are dropped.',
     keyConcepts: [
-      { term: 'Working memory', detail: 'Whatever fits in the current context window.' },
-      { term: 'Long-term memory', detail: 'External stores the agent queries on demand.' },
-      { term: 'RAG', detail: 'Retrieve relevant chunks, then answer grounded in them.' },
+      { term: 'Turn detection', detail: 'Faster end-of-turn vs. not cutting people off.' },
+      { term: 'Cancel + truncate', detail: 'The model remembers only what was actually heard.' },
+      { term: 'Stale-action guard', detail: 'Tool calls from a cancelled answer never run.' },
     ],
     example: {
-      label: '"Can I return opened headphones?"',
-      text: 'The support agent embeds the question, retrieves the three closest policy passages from 2,000 documents, and answers citing section 4.2 — instead of guessing from training data.',
+      label: 'Try it: interrupt me',
+      text: 'While I explain a slide, say "wait, explain tool calling instead." The answer stops mid-sentence, the old response\'s pending actions are discarded, and the new question is answered on the right slide.',
+      illustrative: false,
     },
     speakerNotes:
-      'Explain three tiers: the context window holds the current conversation and instructions; short-term memory keeps session history, often summarized to save tokens; long-term memory lives outside the model in a database or vector store. RAG is the pipeline that bridges them: split documents into chunks, embed them, search by similarity, optionally rerank, then inject the best chunks into the prompt. Stress that retrieval quality — not model size — usually limits answer quality.',
+      'Explain turn-taking: voice activity detection marks when speech starts and stops; semantic VAD also uses the words to judge whether the user has finished, so a pause mid-thought does not trigger a reply. Barge-in: when the user speaks while the agent is talking, the server cancels the in-progress response, and over WebRTC it truncates the audio that was never played, so the conversation history reflects only what the user actually heard. The client must then drop anything the cancelled response still owns, such as a pending slide change. The trade-off: more eager turn detection lowers latency but cuts users off; less eager detection feels patient but slower.',
     keywords: [
-      'memory', 'context', 'context window', 'rag', 'retrieval', 'retrieval augmented generation',
-      'vector', 'vector database', 'embeddings', 'embedding', 'knowledge', 'documents', 'search', 'tokens',
-      'long-term', 'short-term', 'chunking',
+      'interruption', 'interruptions', 'interrupt', 'interrupting', 'barge-in', 'barge in', 'turn-taking', 'turn taking',
+      'turn detection', 'vad', 'voice activity detection', 'cancel', 'truncate', 'talk over', 'stop talking', 'eagerness',
+    ],
+    sources: [
+      { label: 'OpenAI — Realtime conversations: interruptions', url: 'https://developers.openai.com/api/docs/guides/realtime-conversations' },
+      { label: 'OpenAI — Voice activity detection', url: 'https://developers.openai.com/api/docs/guides/realtime-vad' },
     ],
     diagram: {
-      kind: 'memory-tiers',
-      tiers: [
-        { label: 'Context window', scope: 'This turn', example: 'Instructions + recent messages' },
-        { label: 'Session memory', scope: 'This conversation', example: 'Summaries of earlier turns' },
-        { label: 'Long-term store', scope: 'Across sessions', example: 'Vector DB, SQL, user profile' },
+      kind: 'interruption',
+      userUtterance: '"Wait — explain tool calling instead."',
+      steps: [
+        { event: 'speech_started', detail: 'VAD hears the user' },
+        { event: 'response cancelled', detail: 'reason: turn_detected' },
+        { event: 'audio truncated', detail: 'history = what was heard' },
+        { event: 'stale actions dropped', detail: 'old tool calls never run' },
+        { event: 'new response', detail: 'answers the new question' },
       ],
-      pipeline: ['Chunk', 'Embed', 'Search', 'Rerank', 'Inject'],
     },
   },
   {
-    id: 'multi-agent',
+    id: 'grounding',
     number: 5,
-    eyebrow: 'Orchestration',
-    title: 'Multi-Agent Workflows',
+    eyebrow: 'Trust',
+    title: 'Grounding & Safety',
     summary:
-      'Complex work can be split across specialized agents coordinated by an orchestrator. Specialization helps focus — but every hand-off adds latency, cost, and a chance for errors to compound.',
+      'A trustworthy agent answers from content it was given, labels anything extra as extra, and says it does not know instead of guessing. Tools get the least privilege they need, and a failed action is reported as failed.',
     keyConcepts: [
-      { term: 'Orchestrator–workers', detail: 'A planner delegates sub-tasks and merges results.' },
-      { term: 'Hand-offs', detail: 'Pass the right context — not the entire history.' },
-      { term: 'Use sparingly', detail: 'Start with one agent; split only when it struggles.' },
+      { term: 'Trusted source first', detail: 'This deck is the agent\'s knowledge base.' },
+      { term: 'No invented facts', detail: 'No made-up statistics, studies or citations.' },
+      { term: 'Truthful tool reporting', detail: 'Never claim an action that did not happen.' },
     ],
     example: {
-      label: 'Writing a market research brief',
-      text: 'A planner splits the brief into three questions, three researcher agents search in parallel, a writer drafts the report, and a critic agent checks every claim has a citation before it ships.',
+      label: 'Illustrative: asked for a number that is not here',
+      text: 'Asked "what percentage of voice agents fail in production?", a grounded presenter says this deck does not include that figure and offers what it does cover — instead of inventing a statistic.',
+      illustrative: true,
     },
     speakerNotes:
-      'Describe common patterns: sequential pipelines, routers that send a request to the right specialist, orchestrator–worker fan-out, and evaluator–optimizer loops where a critic reviews output. The orchestrator owns the plan and shared state. Be candid about trade-offs: multi-agent systems are harder to debug, cost more tokens, and errors compound across hand-offs. A good rule is to begin with a single well-tooled agent and split only when distinct skills or parallelism clearly pay off.',
+      'For six slides, retrieval infrastructure is unnecessary: the whole deck fits in the model\'s instructions, and each navigation returns the slide content as the tool result. For larger knowledge bases, retrieval-augmented generation fetches relevant passages and grounds the answer in them (Lewis et al., 2020). The habits are the same at any scale: answer from trusted content, label general knowledge as such, never invent figures or citations, treat retrieved text and tool output as untrusted input — prompt injection is the first entry in the OWASP Top 10 for LLM applications — give tools least privilege, and report tool failures honestly. This prototype is educational and makes no clinical or compliance claims.',
     keywords: [
-      'multi-agent', 'multiple agents', 'multi agent', 'collaborate', 'collaboration', 'orchestration',
-      'orchestrator', 'workflow', 'workflows', 'handoff', 'hand-off', 'delegation', 'crew', 'swarm',
-      'parallel', 'team of agents', 'coordinator', 'planner', 'critic',
+      'grounding', 'grounded', 'hallucination', 'hallucinate', 'accuracy', 'accurate', 'facts', 'rag', 'retrieval',
+      'memory', 'knowledge', 'sources', 'citation', 'safety', 'guardrails', 'prompt injection', 'trust', 'statistic',
+    ],
+    sources: [
+      { label: 'Lewis et al. (2020) — Retrieval-Augmented Generation', url: 'https://arxiv.org/abs/2005.11401' },
+      { label: 'OWASP Top 10 for LLM Applications', url: 'https://owasp.org/www-project-top-10-for-large-language-model-applications/' },
+      { label: 'Synthio Labs — Building Reliable AI Agents for Life Sciences', url: 'https://synthiolabs.com/blog/building-reliable-ai-agents-for-life-sciences' },
     ],
     diagram: {
-      kind: 'orchestration',
-      orchestrator: 'Orchestrator',
-      workers: [
-        { label: 'Researcher', task: 'Gathers sources' },
-        { label: 'Analyst', task: 'Crunches numbers' },
-        { label: 'Writer', task: 'Drafts the report' },
+      kind: 'layers',
+      tiers: [
+        { label: 'Trusted content', scope: 'This deck', example: 'Slides, notes, listed sources' },
+        { label: 'General knowledge', scope: 'Labeled as extra', example: '"Beyond what\'s on the slide…"' },
+        { label: 'Unknown', scope: 'Say so', example: 'No invented figures or citations' },
       ],
-      aggregator: 'Critic → final answer',
-      patterns: ['Pipeline', 'Router', 'Orchestrator–workers', 'Evaluator–optimizer'],
+      pipelineLabel: 'Every answer',
+      pipeline: ['Retrieve', 'Ground', 'Answer', 'Check', 'Log'],
     },
   },
   {
-    id: 'production',
+    id: 'evaluation',
     number: 6,
-    eyebrow: 'Production',
-    title: 'Safety, Evaluation & Observability',
+    eyebrow: 'Evaluation',
+    title: 'Evaluating Voice Agents in Voice',
     summary:
-      'Shipping an agent is mostly about control. Constrain what it can do, measure how often it succeeds, and trace every step so failures can be explained and fixed.',
+      'Transcript-only tests miss what callers experience: timing, interruptions and speech-recognition errors. Evaluate with scripted voice scenarios over the real audio pipeline, score them automatically, and trace every turn.',
     keyConcepts: [
-      { term: 'Safety', detail: 'Least-privilege tools, injection defense, human approval.' },
-      { term: 'Evaluation', detail: 'Task-success suites run on every change.' },
-      { term: 'Observability', detail: 'Trace each step: tokens, latency, cost, errors.' },
+      { term: 'Scenario suites', detail: 'Scripted callers, run before every change.' },
+      { term: 'Voice metrics', detail: 'First-audio latency, interruption recovery, tool accuracy.' },
+      { term: 'Traces', detail: 'Per-turn events with session IDs — no secrets.' },
     ],
     example: {
-      label: 'Why reliability compounds',
-      text: 'A step that succeeds 95% of the time, chained ten times, completes the whole task only about 60% of the time. That is why agents need evals, retries, and checkpoints.',
+      label: 'This app\'s eval suite',
+      text: 'Ten scripted scenarios speak synthesized audio into the live model — direct questions, follow-ups, mid-sentence interruptions, out-of-scope asks — and check navigation, timing and grounding automatically.',
+      illustrative: false,
     },
     speakerNotes:
-      'Cover three pillars. Safety: prompt injection from retrieved content or tool output is the top risk, so give tools minimal permissions, validate arguments, and require human approval for irreversible actions like payments or deletions. Evaluation: build a golden dataset of real tasks, score task success, and use LLM-as-judge carefully alongside deterministic checks; run it as a regression suite. Observability: log a trace for each run with every model call, tool call, token count, latency, and cost. Close with the compounding reliability statistic.',
+      'Text evals show whether the agent reasons correctly; voice evals show whether it works on a real call, because interruptions, timing and speech-recognition errors only appear in audio. Describe this app\'s harness: synthesized caller audio streams into the live model with the same session configuration as production, while checks score navigation, interruption handling, first-audio latency and grounding, and an LLM judge scores the answers against a rubric. Close with compounding reliability: a step that succeeds 95% of the time, chained ten times, completes only about 60% of the time end to end, which is why whole scenarios matter more than single turns.',
     keywords: [
-      'production', 'safety', 'security', 'risk', 'risks', 'prompt injection', 'guardrails', 'evaluation',
-      'evals', 'testing', 'observability', 'monitoring', 'tracing', 'logging', 'reliability', 'cost',
-      'latency', 'hallucination', 'human in the loop', 'deploy', 'challenges',
+      'evaluation', 'evaluate', 'evals', 'testing', 'test', 'metrics', 'measure', 'quality', 'observability',
+      'monitoring', 'tracing', 'reliability', 'scenarios', 'benchmark', 'production', 'regression',
     ],
+    sources: [{ label: 'Synthio Labs — Why We Evaluate Voice Agents in Voice', url: 'https://synthiolabs.com/blog/why-we-evaluate-voice-agents-in-voice' }],
     diagram: {
-      kind: 'production',
+      kind: 'pillars',
       pillars: [
-        { label: 'Safety', items: ['Least-privilege tools', 'Prompt-injection defense', 'Human approval gates'] },
-        { label: 'Evaluation', items: ['Golden task datasets', 'Deterministic + LLM judges', 'Regression on every change'] },
-        { label: 'Observability', items: ['Per-step traces', 'Tokens, latency, cost', 'Tool error rates'] },
+        { label: 'Scenario suites', items: ['Scripted synthetic callers', 'Interruptions & topic switches', 'Run before every change'] },
+        { label: 'Voice metrics', items: ['Turn → first-audio latency', 'Interruption recovery', 'Tool & navigation accuracy'] },
+        { label: 'Observability', items: ['Per-turn event traces', 'Session-correlated IDs', 'Grounding flags, no secrets'] },
       ],
       stat: { value: '0.95¹⁰ ≈ 60%', caption: 'end-to-end success of ten 95%-reliable steps' },
     },

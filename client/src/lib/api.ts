@@ -11,13 +11,13 @@ export class ApiRequestError extends Error {
 }
 
 /** Asks our backend for a short-lived Realtime credential. The real API key never leaves the server. */
-export async function requestSession(currentSlide: number, signal?: AbortSignal): Promise<CreateSessionResponse> {
+export async function requestSession(currentSlide: number, clientSessionId: string, signal?: AbortSignal): Promise<CreateSessionResponse> {
   let res: Response;
   try {
     res = await fetch('/api/realtime/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ currentSlide }),
+      body: JSON.stringify({ currentSlide, clientSessionId }),
       signal,
     });
   } catch {

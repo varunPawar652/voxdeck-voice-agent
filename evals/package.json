@@ -1,0 +1,19 @@
+{
+  "name": "@voxdeck/evals",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "eval": "tsx run.ts"
+  },
+  "dependencies": {
+    "@voxdeck/shared": "*",
+    "dotenv": "^18.0.8",
+    "openai": "^7.34.0",
+    "tsx": "^4.23.15",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0"
+  }
+}

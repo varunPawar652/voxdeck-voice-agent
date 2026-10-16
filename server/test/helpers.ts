@@ -15,6 +15,9 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     realtimeVoice: 'marin',
     transcriptionModel: 'gpt-4o-mini-transcribe',
     clientSecretTtlSeconds: 120,
+    vadEagerness: 'auto',
+    turnDetection: 'semantic_vad',
+    vadSilenceMs: 500,
     logLevel: 'silent',
     ...overrides,
   };

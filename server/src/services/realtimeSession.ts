@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import type { ClientSecretCreateParams, ClientSecretCreateResponse } from 'openai/resources/realtime/client-secrets';
 import type { RealtimeSessionCreateRequest } from 'openai/resources/realtime/realtime';
 import { buildInstructions, navigateToSlideTool, type CreateSessionResponse } from '@voxdeck/shared';
-import type { AppConfig } from '../config/env.ts';
+import type { AppConfig, TurnDetectionType, VadEagerness } from '../config/env.ts';
 import { HttpError } from '../lib/httpError.ts';
 import type { Logger } from '../lib/logger.ts';
 
@@ -11,6 +11,25 @@ export interface SessionOptions {
   voice: string;
   transcriptionModel: string;
   currentSlide: number;
+  vadEagerness?: VadEagerness;
+  turnDetection?: TurnDetectionType;
+  vadSilenceMs?: number;
+}
+
+type TurnDetection = NonNullable<NonNullable<NonNullable<RealtimeSessionCreateRequest['audio']>['input']>['turn_detection']>;
+
+/**
+ * Both modes keep barge-in on: user speech cancels the in-flight response and the server
+ * truncates unplayed audio so the conversation history matches what was actually heard.
+ */
+export function buildTurnDetection(opts: Pick<SessionOptions, 'turnDetection' | 'vadEagerness' | 'vadSilenceMs'>): TurnDetection {
+  if (opts.turnDetection === 'server_vad') {
+    // Plain silence timer: fast and predictable, but can cut off a user who pauses mid-thought.
+    return { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: opts.vadSilenceMs ?? 500, create_response: true, interrupt_response: true };
+  }
+  // Semantic VAD waits for a *semantically* finished turn, so a user pausing mid-thought
+  // ("Wait… explain tool calling instead") is not cut off, yet speech still interrupts instantly.
+  return { type: 'semantic_vad', eagerness: opts.vadEagerness ?? 'auto', create_response: true, interrupt_response: true };
 }
 
 /**
@@ -30,16 +49,7 @@ export function buildSessionConfig(opts: SessionOptions): RealtimeSessionCreateR
         transcription: { model: opts.transcriptionModel, language: 'en' },
         // Laptop mic + speakers: suppress room echo so playback doesn't trigger false barge-ins.
         noise_reduction: { type: 'near_field' },
-        turn_detection: {
-          // Semantic VAD waits for a *semantically* finished turn, so a user pausing mid-thought
-          // ("Wait… explain tool calling instead") is not cut off, yet speech still interrupts instantly.
-          type: 'semantic_vad',
-          eagerness: 'auto',
-          create_response: true,
-          // Barge-in: user speech cancels the in-flight response and the server truncates
-          // the unplayed audio so the conversation history matches what was actually heard.
-          interrupt_response: true,
-        },
+        turn_detection: buildTurnDetection(opts),
       },
       output: { voice: opts.voice },
     },
@@ -57,7 +67,7 @@ export interface ClientSecretsApi {
 
 export interface RealtimeSessionService {
   readonly configured: boolean;
-  createSession(input: { currentSlide: number }): Promise<CreateSessionResponse>;
+  createSession(input: { currentSlide: number; clientSessionId?: string }): Promise<CreateSessionResponse>;
 }
 
 export function createRealtimeSessionService(
@@ -73,7 +83,7 @@ export function createRealtimeSessionService(
 
   return {
     configured: Boolean(api),
-    async createSession({ currentSlide }) {
+    async createSession({ currentSlide, clientSessionId }) {
       if (!api) {
         throw new HttpError(
           503,
@@ -87,6 +97,9 @@ export function createRealtimeSessionService(
         voice: config.realtimeVoice,
         transcriptionModel: config.transcriptionModel,
         currentSlide,
+        vadEagerness: config.vadEagerness,
+        turnDetection: config.turnDetection,
+        vadSilenceMs: config.vadSilenceMs,
       });
 
       const started = Date.now();
@@ -97,7 +110,7 @@ export function createRealtimeSessionService(
           session,
         });
       } catch (err) {
-        throw toUpstreamError(err, logger);
+        throw toUpstreamError(err, logger.child({ clientSessionId }));
       }
 
       if (!secret?.value || typeof secret.expires_at !== 'number') {
@@ -106,7 +119,7 @@ export function createRealtimeSessionService(
       }
 
       logger.info(
-        { event: 'realtime.client_secret.created', model: config.realtimeModel, voice: config.realtimeVoice, ms: Date.now() - started, expiresAt: secret.expires_at },
+        { event: 'realtime.client_secret.created', clientSessionId, model: config.realtimeModel, voice: config.realtimeVoice, turnDetection: config.turnDetection, vadEagerness: config.vadEagerness, ms: Date.now() - started, expiresAt: secret.expires_at },
         'Created ephemeral Realtime client secret',
       );
       return {

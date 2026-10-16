@@ -1,11 +1,13 @@
 import {
   NAVIGATE_TOOL_NAME,
+  auditGrounding,
   formatZodError,
   getSlide,
   navigateToSlideArgsSchema,
   type NavigateToSlideArgs,
 } from '@voxdeck/shared';
 import type { ClientEvent, FunctionCallItem, RealtimeResponse, ServerEvent } from '../types/realtime.ts';
+import { DiagnosticsRecorder } from './diagnostics.ts';
 
 export type PresenterStatus = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'interrupted' | 'error';
 
@@ -15,6 +17,8 @@ export interface TranscriptEntry {
   text: string;
   state: 'streaming' | 'done' | 'interrupted';
   responseId?: string;
+  /** Grounding-audit findings for a finished assistant answer (heuristic). */
+  groundingFlags?: string[];
 }
 
 export interface NavigationRecord {
@@ -55,6 +59,7 @@ export const INTERRUPTED_BADGE_MS = 900;
 
 interface PendingNavigation {
   callId: string;
+  responseId: string;
   args: NavigateToSlideArgs;
   epoch: number;
   timer: unknown;
@@ -63,9 +68,14 @@ interface PendingNavigation {
 /**
  * Turns Realtime server events into slide changes, client events and UI state.
  *
- * Framework-free so it can be unit-tested with a fake `send`, deck and clock.
- * The deck (React state) stays the source of truth: every navigation goes through
- * `deck.goTo`, and the model is told the outcome via `function_call_output`.
+ * Framework-free so it runs unchanged in the browser, in unit tests (fake clock and
+ * transport) and in the live voice eval harness (WebSocket transport).
+ *
+ * Invariants it protects — everything else is left to the model:
+ *  1. The deck (React state) is the source of truth; the model learns it from tool results.
+ *  2. Every function call gets exactly one function_call_output.
+ *  3. Nothing produced by an interrupted response is applied (speech, slide changes).
+ *  4. The model is never told a navigation succeeded unless the deck actually changed.
  */
 export class PresenterController {
   private snapshot: PresenterSnapshot = { status: 'idle', transcript: [], lastNavigation: null, error: null };
@@ -79,16 +89,25 @@ export class PresenterController {
   private handledCallIds = new Set<string>();
   /** Calls whose function_call_output has been sent — guarantees exactly one output per call. */
   private answeredCallIds = new Set<string>();
-  /** Bumped by interruptions and manual navigation; deferred navigations from an older epoch are dropped. */
+  /** Bumped by interruptions and manual navigation; deferred work from an older epoch is dropped. */
   private navEpoch = 0;
   private pendingNav: PendingNavigation | null = null;
   private badgeTimer: unknown = null;
+  /** End of the latest user turn, for turn → first-audio latency. */
+  private turnEndedAt: number | null = null;
+  /** A response.create was rejected because another response was active; retry once it ends. */
+  private retryCreate: { epoch: number } | null = null;
+
+  readonly diag: DiagnosticsRecorder;
 
   constructor(
     private readonly send: (event: ClientEvent) => boolean,
     private readonly deck: DeckPort,
     private readonly scheduler: Scheduler = realScheduler,
-  ) {}
+    diag?: DiagnosticsRecorder,
+  ) {
+    this.diag = diag ?? new DiagnosticsRecorder(() => scheduler.now());
+  }
 
   // ── store plumbing (useSyncExternalStore) ────────────────────────────────
   subscribe = (listener: () => void) => {
@@ -130,14 +149,16 @@ export class PresenterController {
   }
 
   /** Data channel is open: greet the audience, or go straight to a queued question. */
-  markConnected(initialQuestion?: string) {
+  markConnected(opts: { initialQuestion?: string; greet?: boolean } = {}) {
     this.setStatus('listening');
-    if (initialQuestion) this.askText(initialQuestion);
-    else this.send({ type: 'response.create' });
+    if (opts.initialQuestion) this.askText(opts.initialQuestion);
+    else if (opts.greet !== false) this.send({ type: 'response.create' });
   }
 
   markError(message: string) {
     this.clearPendingNavigation();
+    this.activeResponseId = null;
+    this.playingResponseId = null;
     this.update({ status: 'error', error: message });
   }
 
@@ -154,6 +175,8 @@ export class PresenterController {
     this.staleResponses.clear();
     this.handledCallIds.clear();
     this.answeredCallIds.clear();
+    this.turnEndedAt = null;
+    this.retryCreate = null;
     this.navEpoch++;
   }
 
@@ -164,9 +187,10 @@ export class PresenterController {
     const playing = this.playingResponseId;
     if (!responseId && !playing) return;
 
+    this.diag.record('interrupt.manual', { responseId: responseId ?? playing });
     this.beginInterruption();
     if (responseId) this.send({ type: 'response.cancel', response_id: responseId });
-    if (playing || responseId) this.send({ type: 'output_audio_buffer.clear' });
+    this.send({ type: 'output_audio_buffer.clear' });
     this.logEvent('Presenter interrupted');
   }
 
@@ -178,6 +202,8 @@ export class PresenterController {
     this.upsertEntry(`typed-${this.scheduler.now()}-${this.snapshot.transcript.length}`, { role: 'user', text: question, state: 'done' });
     this.send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: question }] } });
     this.send({ type: 'response.create' });
+    this.turnEndedAt = this.scheduler.now();
+    this.diag.record('turn.text', { chars: question.length });
     this.setStatus('thinking');
   }
 
@@ -187,6 +213,7 @@ export class PresenterController {
     this.clearPendingNavigation('superseded by manual navigation');
     const info = getSlide(slide);
     if (!info || this.snapshot.status === 'idle' || this.snapshot.status === 'connecting') return;
+    this.diag.record('nav.manual', { to: slide });
     this.send({
       type: 'conversation.item.create',
       item: {
@@ -203,16 +230,28 @@ export class PresenterController {
     const event = raw as ServerEvent;
 
     switch (event.type) {
+      case 'session.created': {
+        const id = (event as { session?: { id?: unknown } }).session?.id;
+        if (typeof id === 'string') this.diag.setRealtimeSessionId(id);
+        break;
+      }
+
       case 'input_audio_buffer.speech_started': {
         const e = event as Extract<ServerEvent, { type: 'input_audio_buffer.speech_started' }>;
+        const bargeIn = Boolean(this.activeResponseId || this.playingResponseId);
+        this.diag.record('turn.speech_started', { itemId: e.item_id, bargeIn });
         // Barge-in: the server (interrupt_response: true) cancels the response and truncates
         // unplayed audio itself. Our job is to drop everything that response still owns.
-        if (this.activeResponseId || this.playingResponseId) this.beginInterruption();
-        else this.setStatus('listening');
+        if (bargeIn) {
+          this.diag.record('interrupt.auto', { responseId: this.activeResponseId ?? this.playingResponseId });
+          this.beginInterruption();
+        } else this.setStatus('listening');
         if (e.item_id) this.upsertEntry(e.item_id, { role: 'user', text: '', state: 'streaming' });
         break;
       }
       case 'input_audio_buffer.speech_stopped':
+        this.turnEndedAt = this.scheduler.now();
+        this.diag.record('turn.speech_stopped', { itemId: (event as { item_id?: string }).item_id });
         if (this.snapshot.status !== 'interrupted') this.setStatus('thinking');
         break;
 
@@ -235,6 +274,7 @@ export class PresenterController {
       case 'response.created': {
         const e = event as Extract<ServerEvent, { type: 'response.created' }>;
         this.activeResponseId = e.response?.id ?? null;
+        this.diag.record('response.created', { responseId: this.activeResponseId });
         if (this.snapshot.status !== 'speaking') this.setStatus('thinking');
         break;
       }
@@ -247,7 +287,19 @@ export class PresenterController {
       case 'response.output_audio_transcript.done': {
         const e = event as Extract<ServerEvent, { type: 'response.output_audio_transcript.done' }>;
         if (this.staleResponses.has(e.response_id)) break;
-        this.upsertEntry(e.item_id, { role: 'assistant', text: e.transcript, state: 'done', responseId: e.response_id });
+        const findings = auditGrounding(e.transcript);
+        const flags = findings.map((f) => `${f.kind}: ${f.text}`);
+        // Diagnostics get the finding type (and the bare number) only — never transcript sentences.
+        if (findings.length) {
+          this.diag.record('grounding.flag', { responseId: e.response_id, flags: findings.map((f) => (f.kind === 'unsupported_number' ? `${f.kind}: ${f.text}` : f.kind)) });
+        }
+        this.upsertEntry(e.item_id, {
+          role: 'assistant',
+          text: e.transcript,
+          state: 'done',
+          responseId: e.response_id,
+          ...(flags.length ? { groundingFlags: flags } : {}),
+        });
         break;
       }
 
@@ -255,6 +307,10 @@ export class PresenterController {
         const id = (event as { response_id?: string }).response_id ?? null;
         if (id && this.staleResponses.has(id)) break;
         this.playingResponseId = id;
+        if (this.turnEndedAt !== null) {
+          this.diag.record('response.first_audio', { responseId: id, latencyMs: this.scheduler.now() - this.turnEndedAt, approximate: true });
+          this.turnEndedAt = null;
+        }
         this.setStatus('speaking');
         break;
       }
@@ -262,7 +318,7 @@ export class PresenterController {
       case 'output_audio_buffer.cleared': {
         this.playingResponseId = null;
         this.flushPendingNavigation();
-        if (!this.activeResponseId && this.snapshot.status === 'speaking') this.setStatus('listening');
+        if (this.snapshot.status === 'speaking') this.setStatus(this.activeResponseId ? 'thinking' : 'listening');
         break;
       }
 
@@ -272,8 +328,16 @@ export class PresenterController {
 
       case 'error': {
         const e = event as Extract<ServerEvent, { type: 'error' }>;
+        const code = e.error?.code;
+        this.diag.record('error.server', { code: code ?? e.error?.type ?? 'unknown' });
         // Benign race: we cancelled a response that had just finished.
-        if (e.error?.code === 'response_cancel_not_active') break;
+        if (code === 'response_cancel_not_active') break;
+        // Our response.create raced another response (e.g. a cancel still settling).
+        // Retry once that response ends — unless the user has spoken since.
+        if (code === 'conversation_already_has_active_response') {
+          this.retryCreate = { epoch: this.navEpoch };
+          break;
+        }
         console.warn('[realtime] server error', e.error);
         this.logEvent(`Voice service: ${e.error?.message ?? 'unknown error'}`);
         break;
@@ -285,7 +349,7 @@ export class PresenterController {
     if (this.activeResponseId) this.staleResponses.add(this.activeResponseId);
     if (this.playingResponseId) this.staleResponses.add(this.playingResponseId);
     this.navEpoch++;
-    this.clearPendingNavigation('cancelled: the user interrupted');
+    this.clearPendingNavigation('cancelled: the user interrupted', true);
 
     const transcript = this.snapshot.transcript.map((entry) =>
       entry.role === 'assistant' && entry.state === 'streaming' ? { ...entry, state: 'interrupted' as const } : entry,
@@ -305,14 +369,30 @@ export class PresenterController {
     if (!response?.id) return;
     const calls = (response.output ?? []).filter((item): item is FunctionCallItem => item?.type === 'function_call');
     const stale = this.staleResponses.has(response.id) || response.status === 'cancelled';
+    this.diag.record('response.done', {
+      responseId: response.id,
+      status: response.status,
+      reason: response.status_details?.reason ?? null,
+      toolCalls: calls.length,
+      stale,
+    });
 
     if (this.activeResponseId === response.id) this.activeResponseId = null;
+
+    if (this.retryCreate) {
+      const { epoch } = this.retryCreate;
+      this.retryCreate = null;
+      if (epoch === this.navEpoch) {
+        this.diag.record('response.retry');
+        this.send({ type: 'response.create' });
+      }
+    }
 
     if (stale || response.status !== 'completed') {
       // Close out every call so the conversation never holds a dangling function_call,
       // but do NOT request a new response — the user (or the error) owns the next turn.
       const why = stale ? 'cancelled: the user interrupted' : `response ${response.status}`;
-      for (const call of calls) this.completeCall(call.call_id, { ok: false, error: why }, false);
+      for (const call of calls) this.completeCall(call.call_id, { ok: false, error: why }, false, { cancelled: stale });
       this.markResponseEntries(response.id, 'interrupted');
       if (response.status === 'failed') {
         const message = response.status_details?.error?.message ?? 'The response failed.';
@@ -326,7 +406,7 @@ export class PresenterController {
       if (!this.playingResponseId && this.snapshot.status !== 'interrupted') this.setStatus('listening');
       return;
     }
-    for (const call of calls) this.dispatchToolCall(call);
+    for (const call of calls) this.dispatchToolCall(call, response.id);
   }
 
   private markResponseEntries(responseId: string, state: TranscriptEntry['state']) {
@@ -337,8 +417,9 @@ export class PresenterController {
   }
 
   // ── tool execution ───────────────────────────────────────────────────────
-  private dispatchToolCall(call: FunctionCallItem) {
+  private dispatchToolCall(call: FunctionCallItem, responseId: string) {
     if (!call.call_id || this.handledCallIds.has(call.call_id)) return;
+    this.diag.record('tool.call', { callId: call.call_id, responseId, name: call.name });
 
     if (call.name !== NAVIGATE_TOOL_NAME) {
       this.completeCall(call.call_id, { ok: false, error: `Unknown tool "${call.name}". Only ${NAVIGATE_TOOL_NAME} is available.` }, true);
@@ -365,10 +446,11 @@ export class PresenterController {
       this.clearPendingNavigation('superseded by a newer navigation');
       const epoch = this.navEpoch;
       const timer = this.scheduler.setTimeout(() => this.flushPendingNavigation(), NEXT_SENTENCE_MAX_WAIT_MS);
-      this.pendingNav = { callId: call.call_id, args, epoch, timer };
+      this.pendingNav = { callId: call.call_id, responseId, args, epoch, timer };
+      this.diag.record('nav.deferred', { callId: call.call_id, to: args.slide_number });
       return;
     }
-    this.executeNavigation(call.call_id, args);
+    this.executeNavigation(call.call_id, responseId, args);
   }
 
   private flushPendingNavigation() {
@@ -377,27 +459,44 @@ export class PresenterController {
     this.scheduler.clearTimeout(pending.timer);
     this.pendingNav = null;
     if (pending.epoch !== this.navEpoch) {
-      this.completeCall(pending.callId, { ok: false, error: 'superseded before the slide changed' }, false);
+      this.diag.record('nav.dropped', { callId: pending.callId, reason: 'stale epoch' });
+      this.completeCall(pending.callId, { ok: false, error: 'superseded before the slide changed' }, false, { cancelled: true });
       return;
     }
-    this.executeNavigation(pending.callId, pending.args);
+    this.executeNavigation(pending.callId, pending.responseId, pending.args);
   }
 
-  private clearPendingNavigation(reason?: string) {
+  private clearPendingNavigation(reason?: string, cancelled = false) {
     const pending = this.pendingNav;
     if (!pending) return;
     this.scheduler.clearTimeout(pending.timer);
     this.pendingNav = null;
-    if (reason) this.completeCall(pending.callId, { ok: false, error: reason }, false);
+    if (reason) {
+      this.diag.record('nav.dropped', { callId: pending.callId, reason });
+      this.completeCall(pending.callId, { ok: false, error: reason }, false, { cancelled: cancelled || reason.startsWith('superseded') });
+    }
   }
 
-  private executeNavigation(callId: string, args: NavigateToSlideArgs) {
+  private executeNavigation(callId: string, responseId: string, args: NavigateToSlideArgs) {
     const slide = getSlide(args.slide_number)!;
     const previous = this.deck.getCurrentSlide();
-    if (previous !== slide.number) this.deck.goTo(slide.number, 'agent');
 
+    if (previous !== slide.number) {
+      try {
+        this.deck.goTo(slide.number, 'agent');
+      } catch (err) {
+        // The handler failed: tell the model the truth so it never claims the slide changed.
+        this.diag.record('tool.failed', { callId, error: err instanceof Error ? err.name : 'unknown' });
+        this.logEvent(`Could not change to slide ${slide.number}`);
+        this.completeCall(callId, { ok: false, error: 'The slide could not be changed.', current_slide: previous }, true);
+        return;
+      }
+      this.diag.record('nav.executed', { callId, responseId, from: previous, to: slide.number });
+      this.logEvent(`Moved to slide ${slide.number} · ${args.reason}`);
+    } else {
+      this.diag.record('nav.noop', { callId, slide: slide.number });
+    }
     this.update({ lastNavigation: { callId, slide: slide.number, reason: args.reason, at: this.scheduler.now() } });
-    if (previous !== slide.number) this.logEvent(`Moved to slide ${slide.number} · ${args.reason}`);
 
     this.completeCall(
       callId,
@@ -408,9 +507,10 @@ export class PresenterController {
         title: slide.title,
         summary: slide.summary,
         key_concepts: slide.keyConcepts.map((c) => `${c.term}: ${c.detail}`),
-        example: `${slide.example.label} — ${slide.example.text}`,
+        example: `${slide.example.illustrative ? '(illustrative) ' : ''}${slide.example.label} — ${slide.example.text}`,
         speaker_notes: slide.speakerNotes,
-        next_step: 'The slide is on screen now. Answer the user using this content.',
+        sources: slide.sources.map((s) => s.label),
+        next_step: 'The slide is on screen now. Answer the user\'s question in 1–3 sentences using this content.',
       },
       true,
     );
@@ -420,10 +520,11 @@ export class PresenterController {
    * Sends the `function_call_output` exactly once per call id, then (optionally)
    * asks the model to continue speaking with the result in context.
    */
-  private completeCall(callId: string, output: Record<string, unknown>, continueResponse: boolean) {
+  private completeCall(callId: string, output: Record<string, unknown>, continueResponse: boolean, meta: { cancelled?: boolean } = {}) {
     if (this.answeredCallIds.has(callId)) return;
     this.handledCallIds.add(callId);
     this.answeredCallIds.add(callId);
+    this.diag.record('tool.result', { callId, ok: output.ok === true, cancelled: Boolean(meta.cancelled), ...(output.ok === true ? {} : { error: output.error }) });
     this.send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(output) } });
     if (continueResponse) this.send({ type: 'response.create' });
   }
